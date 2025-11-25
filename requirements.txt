@@ -1,0 +1,10 @@
+torch
+torchaudio
+chatterbox-tts
+pydub
+faster-whisper
+torchcodec
+fastapi
+uvicorn
+python-multipart
+
