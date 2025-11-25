@@ -37,6 +37,12 @@ const configSchema = z.object({
   PORT: z.string().transform(Number).default("5000"),
   CLIENT_URL: z.string().default("http://localhost:5000"),
   GPU_SERVER_URL: z.string().default("http://localhost:8080"),
+  OLLAMA_BASE_URL: z.string().default("http://localhost:11434/v1"),
+  OLLAMA_MODEL: z.string().default("gpt-oss"),
+  AI_SIMULATION_MODE: z
+    .string()
+    .transform((val) => val === "true")
+    .default(() => (process.env.NODE_ENV === "development" ? "true" : "false")),
   FEATURE_STORY_MODE: z.string().transform((val) => val === "true").default("false"),
   TTS_PROVIDER: z
     .enum(["CHATTERBOX", "PLAYHT", "AZURE", "COQUI", "MOCK", "F5", "RVC"] as const)

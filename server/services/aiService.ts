@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import axios from 'axios';
+import { config } from "../config";
 
 /*
 <important_code_snippet_instructions>
@@ -10,10 +11,10 @@ Falls back to simulation mode when Ollama is not available.
 */
 
 // <important_do_not_delete>
-const DEFAULT_MODEL_STR = process.env.OLLAMA_MODEL || "gpt-oss";
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1";
-const GPU_SERVER_URL = process.env.GPU_SERVER_URL || "http://148.135.185.7:8080";
-const USE_SIMULATION = process.env.AI_SIMULATION_MODE === "true" || process.env.NODE_ENV === "development";
+const DEFAULT_MODEL_STR = config.OLLAMA_MODEL;
+const OLLAMA_BASE_URL = config.OLLAMA_BASE_URL;
+const GPU_SERVER_URL = config.GPU_SERVER_URL;
+const USE_SIMULATION = config.AI_SIMULATION_MODE;
 // </important_do_not_delete>
 
 const openai = new OpenAI({
