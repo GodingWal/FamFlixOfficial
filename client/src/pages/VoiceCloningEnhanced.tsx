@@ -208,7 +208,7 @@ export default function VoiceCloningEnhanced() {
       }
 
       const warningMessage = typeof data?.warning === 'string' ? data.warning : null;
-      const fatalWarning = warningMessage ? /missing dependencies|fallback_beep_audio|chatterbox/i.test(warningMessage) : false;
+      const fatalWarning = warningMessage ? /missing dependencies|fallback_beep_audio/i.test(warningMessage) : false;
 
       if (warningMessage) {
         setPreviewWarning(warningMessage);
@@ -220,7 +220,7 @@ export default function VoiceCloningEnhanced() {
         setPreviewAudioRequiresAuth(true);
         await playAudioSrc(audioUrl, { requiresAuth: true });
       } else if (fatalWarning) {
-        const description = warningMessage || 'Preview audio could not be generated. Check your Chatterbox setup.';
+        const description = warningMessage || 'Preview audio could not be generated. Check your TTS setup.';
         setPreviewError(description);
         toast({ title: 'Preview unavailable', description, variant: 'destructive' });
         return;
@@ -237,7 +237,7 @@ export default function VoiceCloningEnhanced() {
       const msg = String(error?.message || '');
       setPreviewError(msg || 'Unable to generate preview');
 
-      const fatalMsg = /missing dependencies|fallback_beep_audio|chatterbox/i.test(msg);
+      const fatalMsg = /missing dependencies|fallback_beep_audio/i.test(msg);
       if (!fatalMsg && /voice cloning service|TTS/i.test(msg) && voice?.audioSampleUrl) {
         toast({
           title: 'Voice service unavailable',

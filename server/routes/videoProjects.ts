@@ -600,7 +600,7 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
         if (!profile) {
           throw new Error('Selected voice profile not found');
         }
-        const promptPath = (profile as any).providerRef || (profile.metadata as any)?.chatterbox?.audioPromptPath;
+        const promptPath = (profile as any).providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
         if (!promptPath) {
           throw new Error('Voice profile is missing an audio prompt path');
         }

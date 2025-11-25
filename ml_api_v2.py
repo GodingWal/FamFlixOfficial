@@ -129,24 +129,17 @@ async def upload_voice_samples(
 @app.post("/api/voice/synthesize")
 async def synthesize_voice(request: VoiceCloneRequest):
     """
-    Generate audio from text using Chatterbox TTS
-    NOTE: This requires chatterbox-tts installation which is complex
-    For now, returns placeholder
+    Generate audio from text using the GPU-backed TTS stack (F5/RVC)
+    Placeholder implementation until the inference server is wired in.
     """
     try:
         logger.info(f"Voice synthesis requested for: {request.text[:50]}...")
-        
-        # TODO: Implement actual Chatterbox TTS synthesis
-        # This would require:
-        # 1. chatterbox-tts package installed
-        # 2. Voice profile reference audio
-        # 3. Running the chatterbox_tts.py script
         
         return {
             "audio_url": None,
             "duration": 0,
             "status": "not_implemented",
-            "message": "Voice synthesis endpoint is a placeholder. Chatterbox TTS integration pending."
+            "message": "Voice synthesis endpoint is a placeholder. F5/RVC integration pending."
         }
     except Exception as e:
         logger.error(f"Error synthesizing voice: {e}")
