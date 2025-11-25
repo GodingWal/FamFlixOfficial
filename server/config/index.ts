@@ -45,41 +45,9 @@ const configSchema = z.object({
     .default(() => (process.env.NODE_ENV === "development" ? "true" : "false")),
   FEATURE_STORY_MODE: z.string().transform((val) => val === "true").default("false"),
   TTS_PROVIDER: z
-    .enum(["CHATTERBOX", "PLAYHT", "AZURE", "COQUI", "MOCK", "F5", "RVC"] as const)
-    .default("CHATTERBOX"),
+    .enum(["PLAYHT", "AZURE", "COQUI", "MOCK", "F5", "RVC"] as const)
+    .default("F5"),
   STORY_AUDIO_PREFIX: z.string().default("stories"),
-
-  // Chatterbox (Resemble AI) configuration
-  CHATTERBOX_SCRIPT_PATH: z.string().default("scripts/chatterbox_tts.py"),
-  PYTHON_BIN: z.string().default(() => {
-    // Check for local venv first
-    const fs = require('fs');
-    const path = require('path');
-    const venvPath = path.resolve(process.cwd(), '.venv/bin/python3');
-    if (fs.existsSync(venvPath)) {
-      return venvPath;
-    }
-    return "python3";
-  }),
-  CHATTERBOX_DEVICE: z.string().default("cpu"), // cpu or cuda
-  CHATTERBOX_MULTILINGUAL: z.string().transform((val) => val === "true").default("false"),
-  CHATTERBOX_LANGUAGE_ID: z.string().optional(),
-  CHATTERBOX_EXAGGERATION: z
-    .string()
-    .optional()
-    .transform((val) => (val === undefined || val === "" ? undefined : Number(val))),
-  CHATTERBOX_CFG_WEIGHT: z
-    .string()
-    .optional()
-    .transform((val) => (val === undefined || val === "" ? undefined : Number(val))),
-  CHATTERBOX_STEPS: z
-    .string()
-    .optional()
-    .transform((val) => (val === undefined || val === "" ? undefined : Number(val))),
-  CHATTERBOX_MAX_NEW_TOKENS: z
-    .string()
-    .optional()
-    .transform((val) => (val === undefined || val === "" ? undefined : Number(val))),
 
   // File Upload
   MAX_FILE_SIZE: z.string().transform(Number).default("52428800"), // 50MB

@@ -5,12 +5,12 @@ import path from "path";
 import { nanoid } from "nanoid";
 import { spawn } from "child_process";
 import { config } from "../config";
+import { getTTSProvider } from "../tts";
 
 export class VoiceService {
   private readonly audioStoragePath = path.resolve(process.cwd(), "uploads", "audio");
   private readonly tempDir = path.resolve(process.cwd(), "temp");
-  private readonly chatterboxScript = path.resolve(process.cwd(), config.CHATTERBOX_SCRIPT_PATH || "scripts/chatterbox_tts.py");
-  private readonly pythonBin = config.PYTHON_BIN || "python3";
+  private readonly defaultProvider = config.TTS_PROVIDER;
 
   constructor() {
     // Ensure audio storage directory exists
@@ -46,8 +46,8 @@ export class VoiceService {
     });
   }
 
-  // Minimal prompt preprocessing for Chatterbox: keep identity, standardize container/format
-  private async preprocessChatterboxPrompt(audioBuffer: Buffer): Promise<Buffer> {
+  // Minimal prompt preprocessing for zero-shot cloning: keep identity, standardize container/format
+  private async preprocessVoicePrompt(audioBuffer: Buffer): Promise<Buffer> {
     try {
       let workingBuffer = audioBuffer;
       // Properly decode non-WAV uploads (e.g., MP3/OGG/M4A) using ffmpeg; do NOT wrap raw bytes
@@ -57,7 +57,7 @@ export class VoiceService {
 
       let audioInfo = await this.analyzeAudioBuffer(workingBuffer);
 
-      // Chatterbox commonly operates at 24kHz mono; keep 16-bit PCM
+      // Zero-shot cloning commonly operates at 24kHz mono; keep 16-bit PCM
       const TARGET_SR = 24000;
       const TARGET_CH = 1;
       const TARGET_BIT = 16;
@@ -84,7 +84,7 @@ export class VoiceService {
         return workingBuffer;
       }
     } catch (error) {
-      console.error('Chatterbox prompt preprocessing error:', error);
+      console.error('Voice prompt preprocessing error:', error);
       return audioBuffer;
     }
   }
@@ -104,7 +104,7 @@ export class VoiceService {
 
   async createVoiceCloneFromFiles(audioFiles: Buffer[], name: string, userId: string, familyId?: string, recordingMetadata?: any[]): Promise<string> {
     try {
-      console.log(`Creating zero-shot voice clone (Chatterbox) for ${name} with ${audioFiles.length} audio files...`);
+      console.log(`Creating zero-shot voice clone for ${name} with ${audioFiles.length} audio files...`);
 
       const metaList = Array.isArray(recordingMetadata) ? recordingMetadata : [];
 
@@ -147,10 +147,10 @@ export class VoiceService {
         throw new Error("No valid audio recordings were provided. Please include at least one clip longer than 3 seconds.");
       }
 
-      // Preprocess to consistent WAV for Chatterbox (minimal processing to preserve voice identity)
+      // Preprocess to consistent WAV for cloning (minimal processing to preserve voice identity)
       const processedRecordings: Array<{ buffer: Buffer; duration: number; metadata?: any }> = [];
       for (const recording of validAudioFiles) {
-        const processedAudio = await this.preprocessChatterboxPrompt(recording.buffer);
+        const processedAudio = await this.preprocessVoicePrompt(recording.buffer);
         processedRecordings.push({ buffer: processedAudio, duration: recording.duration, metadata: recording.metadata });
       }
 
@@ -170,8 +170,8 @@ export class VoiceService {
         name,
         userId,
         familyId,
-        provider: "CHATTERBOX" as any,
-        providerRef: audioFilePath, // Local path used by Chatterbox CLI as audio_prompt
+        provider: this.defaultProvider as any,
+        providerRef: audioFilePath, // Local path used by the TTS provider as the audio prompt
         audioSampleUrl: `/uploads/audio/${audioFileName}`,
         trainingProgress: 100,
         status: "ready",
@@ -180,20 +180,18 @@ export class VoiceService {
           cloneType: "zero_shot",
           totalInputDuration: totalDuration,
           createdAt: new Date().toISOString(),
-          chatterbox: {
+          voice: {
             audioPromptPath: audioFilePath,
-            multilingual: config.CHATTERBOX_MULTILINGUAL,
-            device: config.CHATTERBOX_DEVICE,
           },
           originalDurations: processedRecordings.map(rec => rec.duration),
           originalFileSizes: validAudioFiles.map(rec => rec.buffer.length),
         },
       } as InsertVoiceProfile);
 
-      console.log(`Voice profile created (Chatterbox) with providerRef=${audioFilePath}`);
+      console.log(`Voice profile created with providerRef=${audioFilePath}`);
       return voiceProfile.id;
     } catch (error: any) {
-      console.error("Voice cloning error (Chatterbox):", error);
+      console.error("Voice cloning error:", error);
       throw new Error(`Voice cloning failed: ${error.message || 'Unknown error occurred'}. Please try again.`);
     }
   }
@@ -744,89 +742,38 @@ export class VoiceService {
     });
 
     try {
-      // Run Chatterbox CLI to synthesize locally
-      const audioFileName = `generated-${generation.id}.wav`;
-      const audioFilePath = path.join(this.tempDir, audioFileName);
-      const audioUrl = `/api/audio/${audioFileName}`;
-
-      const args: string[] = [
-        this.chatterboxScript,
-        "--text",
-        text,
-        "--out",
-        audioFilePath,
-      ];
-
-      const providerRef = (voiceProfile as any).providerRef || (voiceProfile.metadata as any)?.chatterbox?.audioPromptPath;
+      const providerKey = (voiceProfile as any).provider || this.defaultProvider;
+      const providerRef = (voiceProfile as any).providerRef || (voiceProfile.metadata as any)?.voice?.audioPromptPath;
       if (!providerRef) {
-        throw new Error("Voice profile is missing an audio prompt reference for Chatterbox");
+        throw new Error("Voice profile is missing an audio prompt reference");
       }
 
-      args.push("--speaker-wav", providerRef);
-      if (config.CHATTERBOX_DEVICE) args.push("--device", String(config.CHATTERBOX_DEVICE));
-      if (config.CHATTERBOX_MULTILINGUAL) args.push("--multilingual");
-      if (config.CHATTERBOX_LANGUAGE_ID) args.push("--language", String(config.CHATTERBOX_LANGUAGE_ID));
-      if (typeof config.CHATTERBOX_EXAGGERATION === 'number') args.push("--exaggeration", String(config.CHATTERBOX_EXAGGERATION));
-      if (typeof config.CHATTERBOX_CFG_WEIGHT === 'number') args.push("--cfg-weight", String(config.CHATTERBOX_CFG_WEIGHT));
-
-      const cliOut = await this.runPython(args);
-
-      // Try to parse CLI JSON (last line) for debug info about prompt usage
-      let cliMeta: any = undefined;
-      try {
-        const lines = (cliOut || '').trim().split('\n');
-        const last = lines[lines.length - 1] || '';
-        if (last.startsWith('{') && last.endsWith('}')) {
-          cliMeta = JSON.parse(last);
-        }
-      } catch (e) {
-        // ignore parse errors; leave cliMeta undefined
-      }
-
-      if (cliMeta && (cliMeta.used_prompt_arg || cliMeta.normalized_prompt_path)) {
-        console.log('[chatterbox-cli]', {
-          used_prompt_arg: cliMeta.used_prompt_arg,
-          normalized_prompt_path: cliMeta.normalized_prompt_path,
-          out_path: cliMeta.out_path,
-          duration_sec: cliMeta.duration_sec,
-        });
-      }
-
-      if (cliMeta?.note === 'fallback_beep_audio') {
-        // Beep fallback means the heavy deps were missing so no real voice was produced.
-        try {
-          await fs.unlink(audioFilePath);
-        } catch {
-          // ignore clean up errors
-        }
-        throw new Error(
-          "Missing dependencies: Chatterbox fell back to beep audio instead of real speech. Install chatterbox-tts, torch, and torchaudio."
-        );
-      }
+      const provider = getTTSProvider(providerKey as string);
+      const result = await provider.synthesize({
+        text,
+        voiceRef: providerRef,
+        storyId: undefined,
+        sectionId: undefined,
+        metadata: { requestedBy },
+      });
 
       await storage.updateVoiceGeneration(generation.id, {
         status: "completed",
-        audioUrl,
+        audioUrl: result.url,
         metadata: {
           ...(generation.metadata || {}),
-          realGeneration: true,
-          provider: "CHATTERBOX",
-          audioFilePath: audioFilePath,
+          provider: providerKey,
+          audioFilePath: result.key,
           completedAt: new Date().toISOString(),
-          ...(cliMeta ? { chatterboxCli: cliMeta } : {}),
+          checksum: result.checksum,
         }
       });
 
       return generation.id;
     } catch (error: any) {
-      console.error("Chatterbox speech generation error:", error);
+      console.error("Speech generation error:", error);
 
-      // Update generation record with error status
-      let errorMessage = "Speech generation failed";
-
-      if (String(error?.message || '').toLowerCase().includes('missing dependencies')) {
-        errorMessage = "Chatterbox dependencies missing. Please install Python 3, torch, torchaudio, and chatterbox-tts.";
-      }
+      const errorMessage = error instanceof Error ? error.message : "Speech generation failed";
 
       await storage.updateVoiceGeneration(generation.id, {
         status: "failed",
@@ -839,31 +786,6 @@ export class VoiceService {
 
       throw new Error(`${errorMessage}. Please try again.`);
     }
-  }
-
-  private runPython(args: string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-      console.log(`[VoiceService] Executing: ${this.pythonBin} ${args.join(" ")}`);
-      const proc = spawn(this.pythonBin, args, { stdio: ["ignore", "pipe", "pipe"] });
-      let out = "";
-      let err = "";
-      proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
-      proc.stderr.on("data", (d: Buffer) => { err += d.toString(); });
-      proc.on("error", (e: Error) => {
-        console.error("[VoiceService] Process error:", e);
-        reject(e);
-      });
-      proc.on("close", (code: number | null) => {
-        if (code !== 0) {
-          console.error(`[VoiceService] Failed with code ${code}. Stderr: ${err}`);
-          console.error(`[VoiceService] Stdout: ${out}`);
-        } else {
-          if (err) console.log(`[VoiceService] Stderr (warning?): ${err}`);
-        }
-        if (code === 0) return resolve(out);
-        reject(new Error(`Chatterbox process exited with code ${code}: ${err || out}`));
-      });
-    });
   }
 
   async getVoiceProfilesByFamily(familyId: string) {

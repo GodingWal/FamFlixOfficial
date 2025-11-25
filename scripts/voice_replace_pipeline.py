@@ -14,7 +14,7 @@ explicitly via the command-line options.
 Prerequisites
 -------------
 - ffmpeg and ffprobe available on the PATH.
-- Python packages: `faster-whisper` (recommended) or `openai-whisper`, plus `pydub`, `torch`/`torchaudio`, and `chatterbox-tts`.
+- Python packages: `faster-whisper` (recommended) or `openai-whisper`, plus `pydub`, `torch`/`torchaudio`, and your preferred TTS backend.
 - A clean voice sample WAV/MP3 that will be used as the audio prompt for zero-shot cloning.
 
 Example
@@ -432,11 +432,7 @@ def write_transcript(segments: Iterable[TranscriptSegment], output_path: Path) -
     output_path.write_text(json.dumps(serialisable, indent=2), encoding="utf-8")
 
 
-def find_python() -> str:
-    return os.environ.get("PYTHON_BIN", "python3")
-
-
-def chatterbox_tts(
+def synthesize_voice_segment(
     *,
     text: str,
     audio_prompt: Path,
@@ -446,94 +442,25 @@ def chatterbox_tts(
     language: Optional[str] = None,
     exaggeration: Optional[float] = None,
     cfg_weight: Optional[float] = None,
-    allow_fallback: bool = False,  # Added: Flag to tolerate beeps
+    allow_fallback: bool = False,
     timeout_override: Optional[int] = None,
-    verbose: bool = False,  # Added: Propagate verbose
+    verbose: bool = False,
 ) -> None:
-    """Call the local Chatterbox CLI wrapper to synthesize speech and save the audio clip."""
-    python_bin = find_python()
-    script_path = Path(__file__).parent / "chatterbox_tts.py"
-    cmd: List[str] = [
-        python_bin,
-        str(script_path),
-        "--text",
+    """Placeholder for CLI-based synthesis; replace with an F5/RVC call when available."""
+    _ = (
         text,
-        "--out",
-        str(output_path),
-        "--speaker-wav",
-        str(audio_prompt),
-        "--device",
+        audio_prompt,
+        output_path,
         device,
-    ]
-    # Optional generation tuning
-    steps_env = os.environ.get("CHATTERBOX_STEPS")
-    if steps_env and steps_env.isdigit():
-        cmd.extend(["--steps", steps_env])
-    attn_impl = os.environ.get("CHATTERBOX_ATTN_IMPL")
-    if attn_impl:
-        cmd.extend(["--attn-impl", attn_impl])
-    max_new_tokens = os.environ.get("CHATTERBOX_MAX_NEW_TOKENS")
-    if max_new_tokens and max_new_tokens.isdigit():
-        cmd.extend(["--max-new-tokens", max_new_tokens])
-    if multilingual:
-        cmd.append("--multilingual")
-    if language:
-        cmd.extend(["--language", language])
-    if exaggeration is not None:
-        cmd.extend(["--exaggeration", str(exaggeration)])
-    if cfg_weight is not None:
-        cmd.extend(["--cfg-weight", str(cfg_weight)])
-    if verbose:  # Added: Propagate
-        cmd.append("--verbose")
-
-    # Quiet/robust env for the subprocess
-    env = os.environ.copy()
-    env.setdefault("DIFFUSERS_DISABLE_PROGRESS_BARS", "1")
-    env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    env.setdefault("TRANSFORMERS_VERBOSITY", "error")
-    env.setdefault("PYTHONWARNINGS", "ignore::FutureWarning")
-
-    timeout_sec = int(timeout_override or os.environ.get("CHATTERBOX_TIMEOUT", "120"))
-    try:
-        result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env, timeout=timeout_sec)
-    except subprocess.TimeoutExpired as e1:
-        # Fallback: retry with adaptive smaller/safer settings (text len-based)
-        text_len = max(1, len(text.strip()))
-        fallback_steps = max(6, min(20, int(0.3 * text_len)))  # Adaptive: ~0.3 steps/char, cap 20
-        fallback_tokens = max(16, min(64, int(0.5 * text_len)))
-        fallback = list(cmd)
-        if "--steps" in fallback:
-            i = fallback.index("--steps")
-            if i >= 0 and i + 1 < len(fallback):
-                fallback[i + 1] = str(fallback_steps)
-        else:
-            fallback.extend(["--steps", str(fallback_steps)])
-        if "--max-new-tokens" in fallback:
-            i = fallback.index("--max-new-tokens")
-            if i >= 0 and i + 1 < len(fallback):
-                fallback[i + 1] = str(fallback_tokens)
-        else:
-            fallback.extend(["--max-new-tokens", str(fallback_tokens)])
-        try:
-            result = subprocess.run(fallback, check=False, capture_output=True, text=True, env=env, timeout=max(90, timeout_sec // 2))
-        except subprocess.TimeoutExpired as e2:
-            raise PipelineError(f"Chatterbox CLI timed out: initial={timeout_sec}s, fallback={max(90, timeout_sec // 2)}s") from e2
-    if result.returncode != 0:
-        raise PipelineError(f"Chatterbox CLI failed: {result.stderr or result.stdout}")
-    # Parse JSON line to report whether the prompt was used and check for fallback
-    try:
-        last_line = (result.stdout or "").strip().splitlines()[-1]
-        meta = json.loads(last_line) if last_line else {}
-        used = meta.get("used_prompt_arg")
-        norm = meta.get("normalized_prompt_path")
-        note = meta.get("note")
-        if used is not None:
-            logging.info(f"[chatterbox] used_prompt_arg={used} normalized_prompt_path={norm}")
-        if note == "fallback_beep_audio" and not allow_fallback:  # Fixed: Detect and raise on beep
-            raise PipelineError(f"Chatterbox fell back to beep audio (note: {note}). Check CLI verbose output.")
-    except json.JSONDecodeError:
-        # Non-fatal if CLI output wasn't JSON
-        pass
+        multilingual,
+        language,
+        exaggeration,
+        cfg_weight,
+        allow_fallback,
+        timeout_override,
+        verbose,
+    )
+    raise PipelineError("CLI voice synthesis is no longer supported. Use the F5/RVC service instead.")
 
 
 def segment_audio_duration(path: Path) -> float:
@@ -716,7 +643,7 @@ def generate_segments(
         per_call_timeout = max(base_timeout, int(1.5 * text_len)) if index == 0 else base_timeout
 
         try:
-            chatterbox_tts(
+            synthesize_voice_segment(
                 text=segment.text,
                 audio_prompt=audio_prompt,
                 output_path=raw_clip,

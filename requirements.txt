@@ -1,6 +1,5 @@
 torch
 torchaudio
-chatterbox-tts
 pydub
 faster-whisper
 torchcodec

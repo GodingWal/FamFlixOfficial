@@ -1076,13 +1076,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error(`Voice profile creation failed after ${duration}ms:`, error);
 
       // Return appropriate error message
-      const msg = typeof error.message === 'string' ? error.message : String(error);
-      if (msg.toLowerCase().includes('chatterbox')) {
-        res.status(503).json({ error: "Voice cloning service error. Please try again later." });
-      } else {
-        const errorMessage = error instanceof Error ? error.message : "Failed to create voice profile";
-        res.status(500).json({ error: errorMessage });
-      }
+      const errorMessage = error instanceof Error ? error.message : "Failed to create voice profile";
+      res.status(500).json({ error: errorMessage });
     }
   });
 

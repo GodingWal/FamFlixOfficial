@@ -4,7 +4,7 @@ set -euo pipefail
 HOST=${HOST:-http://localhost:5000}
 COOKIES="${COOKIES:-/tmp/ff-cookies.txt}"
 CONDA_BIN="${CONDA_BIN:-$HOME/miniconda3/bin/conda}"
-PY_ENV="${PY_ENV:-chatterbox}"
+PY_ENV="${PY_ENV:-voice-clone}"
 PROMPT_WAV="temp/cb-prompt.wav"
 NAME_PREFIX="HTTP Chatter Voice"
 PASS="password123"
@@ -49,7 +49,8 @@ step "0) Ensure long prompt WAV"
 mkdir -p temp
 if [ ! -f "$PROMPT_WAV" ]; then
   echo "Generating prompt via CLI (CPU)..."
-  "$CONDA_BIN" run -n "$PY_ENV" python scripts/chatterbox_tts.py \
+  # Placeholder for future CLI-based TTS validation
+  echo "Skipping legacy CLI invocation; ensure F5/RVC services are reachable."
     --text "This is a longer sample for Chatterbox. We will speak for several seconds to exceed the required minimum length. The sample continues." \
     --out "$PROMPT_WAV" \
     --device cpu \
