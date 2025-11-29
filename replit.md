@@ -114,6 +114,18 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
+### 2025-11-29: Simplified Voice Cloning UI
+- Completely redesigned the voice cloning page with a clean 3-step wizard
+- Step 1: Name your voice - Simple input with gradient icon
+- Step 2: Record or upload - Large circular recording indicator with timer
+- Step 3: Preview & create - Confirmation screen with voice details
+- Modern step indicator with progress visualization
+- Clean card-based design with consistent spacing
+- Visual feedback for recording state (pulsing red), ready state (green)
+- Existing voice profiles shown in a grid below the wizard
+- Removed complex multi-sentence recording flow in favor of single recording
+- Removed tabs and simplified to single focused flow
+
 ### 2025-11-29: Background Audio Preservation
 - Added `preserveBackground` option to video processing pipeline
 - When enabled, original audio is ducked (reduced volume) during speech segments
