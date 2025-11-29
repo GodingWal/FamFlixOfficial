@@ -128,6 +128,10 @@ interface StoryJobStatus {
   id: string;
   state: string;
   progress: number;
+  totalSections?: number;
+  completedSections?: number;
+  currentSection?: number;
+  estimatedSecondsRemaining?: number | null;
   attempts: number;
   data: {
     storyId: string;
@@ -210,6 +214,23 @@ const formatMinutes = (minutes: number | null | undefined) => {
     return `${hours.toFixed(1)} hours`;
   }
   return `${Math.round(hours)} hours`;
+};
+
+const formatSecondsRemaining = (seconds: number | null | undefined) => {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) {
+    return null;
+  }
+  if (seconds < 5) {
+    return "Almost done...";
+  }
+  if (seconds < 60) {
+    return `About ${Math.ceil(seconds / 5) * 5} seconds remaining`;
+  }
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes === 1) {
+    return "About 1 minute remaining";
+  }
+  return `About ${minutes} minutes remaining`;
 };
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -348,6 +369,12 @@ export default function Stories() {
           return;
         }
         setJobStatus(data);
+        
+        if (data.state === "active") {
+          queryClient.invalidateQueries({
+            queryKey: ["story-audio", activeJob.slug, activeJob.voiceId],
+          });
+        }
 
         if (data.state === "completed") {
           toast({
@@ -999,7 +1026,7 @@ export default function Stories() {
                           <div className="rounded-lg border border-border bg-card p-4 space-y-3 text-sm">
                             <div className="flex items-center justify-between gap-3">
                               <span className="font-medium text-foreground">
-                                Synthesis progress
+                                Generating narration
                               </span>
                               <Badge
                                 variant="outline"
@@ -1008,10 +1035,17 @@ export default function Stories() {
                                 {JOB_STATE_LABEL[jobStatus.state] ?? jobStatus.state}
                               </Badge>
                             </div>
-                            <Progress value={jobStatus.progress ?? 0} />
+                            <Progress value={jobStatus.progress ?? 0} className="h-3" />
                             <div className="flex items-center justify-between text-xs text-muted-foreground">
-                              <span>Job ID: {jobStatus.id}</span>
-                              <span>{Math.round(jobStatus.progress ?? 0)}%</span>
+                              <span>
+                                {jobStatus.totalSections && jobStatus.completedSections !== undefined
+                                  ? `Section ${jobStatus.completedSections} of ${jobStatus.totalSections}`
+                                  : `Progress: ${Math.round(jobStatus.progress ?? 0)}%`}
+                              </span>
+                              <span className="font-medium">
+                                {formatSecondsRemaining(jobStatus.estimatedSecondsRemaining) ??
+                                  `${Math.round(jobStatus.progress ?? 0)}%`}
+                              </span>
                             </div>
                             {jobStatus.failedReason && (
                               <p className="text-xs text-destructive">

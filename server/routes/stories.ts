@@ -21,6 +21,82 @@ import { Readable } from "stream";
 
 const router = Router();
 
+interface SynthesisJob {
+  id: string;
+  storyId: string;
+  voiceId: string;
+  state: "waiting" | "active" | "completed" | "failed";
+  progress: number;
+  totalSections: number;
+  completedSections: number;
+  currentSection: number;
+  totalWords: number;
+  completedWords: number;
+  estimatedSecondsRemaining: number | null;
+  avgMsPerWord: number | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+  error: string | null;
+}
+
+const inMemoryJobs = new Map<string, SynthesisJob>();
+
+function getOrCreateJob(jobId: string, storyId: string, voiceId: string, totalSections: number, totalWords: number): SynthesisJob {
+  let job = inMemoryJobs.get(jobId);
+  if (!job) {
+    job = {
+      id: jobId,
+      storyId,
+      voiceId,
+      state: "waiting",
+      progress: 0,
+      totalSections,
+      completedSections: 0,
+      currentSection: 0,
+      totalWords,
+      completedWords: 0,
+      estimatedSecondsRemaining: null,
+      avgMsPerWord: null,
+      startedAt: new Date(),
+      finishedAt: null,
+      error: null,
+    };
+    inMemoryJobs.set(jobId, job);
+  }
+  return job;
+}
+
+function updateJobProgress(jobId: string, completedSections: number, completedWords: number, currentSection: number, avgMsPerWord?: number) {
+  const job = inMemoryJobs.get(jobId);
+  if (!job) return;
+  
+  job.completedSections = completedSections;
+  job.completedWords = completedWords;
+  job.currentSection = currentSection;
+  job.state = "active";
+  job.progress = job.totalSections > 0 ? Math.round((completedSections / job.totalSections) * 100) : 0;
+  
+  if (avgMsPerWord) {
+    job.avgMsPerWord = avgMsPerWord;
+    const remainingWords = job.totalWords - completedWords;
+    job.estimatedSecondsRemaining = Math.ceil((remainingWords * avgMsPerWord) / 1000);
+  }
+}
+
+function completeJob(jobId: string, failed: boolean = false, error?: string) {
+  const job = inMemoryJobs.get(jobId);
+  if (!job) return;
+  
+  job.state = failed ? "failed" : "completed";
+  job.progress = failed ? job.progress : 100;
+  job.finishedAt = new Date();
+  job.error = error || null;
+  
+  setTimeout(() => {
+    inMemoryJobs.delete(jobId);
+  }, 5 * 60 * 1000);
+}
+
 const STORY_MODE_NOT_ENABLED = { error: "Story Mode is not enabled" } as const;
 const STORY_RIGHTS_FOR_PUBLIC: RightsStatus[] = ["PUBLIC_DOMAIN", "LICENSED", "ORIGINAL"];
 const CATEGORY_SET = new Set(storyCategories.map((category) => category.toUpperCase()));
@@ -298,70 +374,115 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
     }
   }
 
-  // If storyQueue is not available (no Redis), run synchronous fallback
+  // If storyQueue is not available (no Redis), run async with in-memory job tracking
   if (!storyQueue) {
-    const defaultProviderKey = voice.provider ?? config.TTS_PROVIDER;
-
-    for (const section of sections) {
+    const sectionsToProcess = sections.filter((section) => {
       const current = audioMap.get(section.id);
-      if (!force && current && current.status === "COMPLETED" && current.audioUrl) {
-        continue;
-      }
+      return force || !current || current.status !== "COMPLETED" || !current.audioUrl;
+    });
+    const totalWords = sectionsToProcess.reduce((sum, s) => sum + (s.wordCount || 0), 0);
+    
+    const job = getOrCreateJob(jobId, story.id, voiceId, sectionsToProcess.length, totalWords);
+    
+    const defaultProviderKey = voice.provider ?? config.TTS_PROVIDER;
+    const voiceRef = voice.providerRef!;
+    const voiceModelId = voice.modelId ?? undefined;
+    const rvcPath = voice.rvcModelPath;
 
-      // Use the voice profile's provider - don't override with F5 for ELEVENLABS voices
-      // since ElevenLabs uses voice IDs while F5 requires local file paths
-      let providerKey = defaultProviderKey;
-      if (section.sectionType === "singing" && defaultProviderKey !== "ELEVENLABS") {
-        providerKey = "RVC";
-      }
+    (async () => {
+      let completedSections = 0;
+      let completedWords = 0;
+      let totalMs = 0;
+      let failedCount = 0;
+      let lastError: string | null = null;
+      
+      for (let i = 0; i < sectionsToProcess.length; i++) {
+        const section = sectionsToProcess[i];
+        const sectionStart = Date.now();
 
-      const provider = getTTSProvider(providerKey);
+        let providerKey = defaultProviderKey;
+        if (section.sectionType === "singing" && defaultProviderKey !== "ELEVENLABS") {
+          providerKey = "RVC";
+        }
 
-      await storage.upsertStoryAudio(section.id, voiceId, {
-        status: "PROCESSING",
-        startedAt: new Date(),
-      });
-
-      try {
-        const result = await provider.synthesize({
-          text: section.text,
-          voiceRef: voice.providerRef!,
-          modelId: voice.modelId ?? undefined,
-          storyId: story.id,
-          sectionId: section.id,
-          metadata: {
-            songTemplateId: section.songTemplateId,
-            rvcModelPath: voice.rvcModelPath,
-          },
-        } as any);
+        const provider = getTTSProvider(providerKey);
 
         await storage.upsertStoryAudio(section.id, voiceId, {
-          status: "COMPLETED",
-          audioUrl: result.url,
-          durationSec: result.durationSec,
-          checksum: result.checksum,
-          completedAt: new Date(),
-          metadata: { key: result.key },
+          status: "PROCESSING",
+          startedAt: new Date(),
         });
-      } catch (err) {
-        await storage.upsertStoryAudio(section.id, voiceId, {
-          status: "FAILED",
-          error: err instanceof Error ? err.message : String(err),
-          completedAt: new Date(),
-        });
-      }
-    }
+        
+        updateJobProgress(jobId, completedSections, completedWords, i + 1);
 
-    const updatedAudio = await storage.getStoryAudioForVoice(story.id, voiceId);
-    const updatedMap = new Map(updatedAudio.map((a) => [a.sectionId, a]));
+        try {
+          const result = await provider.synthesize({
+            text: section.text,
+            voiceRef,
+            modelId: voiceModelId,
+            storyId: story.id,
+            sectionId: section.id,
+            metadata: {
+              songTemplateId: section.songTemplateId,
+              rvcModelPath: rvcPath,
+            },
+          } as any);
+
+          await storage.upsertStoryAudio(section.id, voiceId, {
+            status: "COMPLETED",
+            audioUrl: result.url,
+            durationSec: result.durationSec,
+            checksum: result.checksum,
+            completedAt: new Date(),
+            metadata: { key: result.key },
+          });
+          
+          completedSections++;
+          completedWords += section.wordCount || 0;
+          const sectionMs = Date.now() - sectionStart;
+          totalMs += sectionMs;
+          const avgMsPerWord = completedWords > 0 ? totalMs / completedWords : undefined;
+          updateJobProgress(jobId, completedSections, completedWords, i + 1, avgMsPerWord);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await storage.upsertStoryAudio(section.id, voiceId, {
+            status: "FAILED",
+            error: errMsg,
+            completedAt: new Date(),
+          });
+          completedSections++;
+          failedCount++;
+          lastError = errMsg;
+          updateJobProgress(jobId, completedSections, completedWords, i + 1);
+        }
+      }
+      
+      if (failedCount > 0) {
+        completeJob(jobId, true, `${failedCount} section(s) failed: ${lastError}`);
+      } else {
+        completeJob(jobId);
+      }
+    })().catch((err) => {
+      console.error("[StorySynthesis] Background job failed:", err);
+      completeJob(jobId, true, err instanceof Error ? err.message : String(err));
+    });
 
     return res.json({
-      ready: true,
-      jobId: null,
-      sections: sections.map((section) => ({
-        ...serializeSection(section, { includeText: true }),
-        audio: serializeAudioEntry(updatedMap.get(section.id)),
-      })),
+      ready: false,
+      jobId,
+      state: job.state,
+      progress: job.progress,
+      totalSections: job.totalSections,
+      completedSections: job.completedSections,
+      estimatedSecondsRemaining: job.estimatedSecondsRemaining,
+      story: {
+        id: story.id,
+        slug: story.slug,
+        title: story.title,
+      },
+      voice: {
+        id: voice.id,
+        displayName: voice.displayName ?? voice.name,
+      },
     });
   }
 
@@ -430,8 +551,37 @@ router.get("/api/stories/:slug/audio", authenticateToken, ensureStoryModeEnabled
 });
 
 router.get("/api/jobs/:jobId", authenticateToken, ensureStoryModeEnabled, async (req: AuthRequest, res) => {
+  const memJob = inMemoryJobs.get(req.params.jobId);
+  if (memJob) {
+    const voice = await storage.getVoiceProfile(memJob.voiceId);
+    if (!voice || voice.userId !== req.user!.id) {
+      return res.status(403).json({ error: "You do not have access to this job" });
+    }
+    
+    return res.json({
+      id: memJob.id,
+      state: memJob.state,
+      progress: memJob.progress,
+      totalSections: memJob.totalSections,
+      completedSections: memJob.completedSections,
+      currentSection: memJob.currentSection,
+      estimatedSecondsRemaining: memJob.estimatedSecondsRemaining,
+      attempts: 0,
+      data: {
+        storyId: memJob.storyId,
+        voiceId: memJob.voiceId,
+      },
+      result: memJob.state === "completed" ? { success: true } : null,
+      failedReason: memJob.error,
+      timestamp: {
+        createdAt: memJob.startedAt.toISOString(),
+        finishedAt: memJob.finishedAt?.toISOString() ?? null,
+      },
+    });
+  }
+  
   if (!storyQueue) {
-    return res.status(503).json({ error: "Job queue is not available. Redis is not configured." });
+    return res.status(404).json({ error: "Job not found" });
   }
   
   const job = await storyQueue.getJob(req.params.jobId);
