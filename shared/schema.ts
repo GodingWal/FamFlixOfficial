@@ -34,10 +34,9 @@ const ttsProviderEnum = pgEnum("tts_provider", [
 
 const jobStatusEnum = pgEnum("story_job_status", [
   "PENDING",
-  "QUEUED",
   "PROCESSING",
-  "COMPLETE",
-  "ERROR",
+  "COMPLETED",
+  "FAILED",
 ]);
 
 export const storyCategories = storyCategoryEnum.enumValues;

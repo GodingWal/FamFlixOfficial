@@ -258,7 +258,7 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
   const audioMap = new Map(existingAudio.map((audio) => [audio.sectionId, audio]));
   const needsRegeneration = sections.filter((section) => {
     const entry = audioMap.get(section.id);
-    return !entry || entry.status !== "COMPLETE" || !entry.audioUrl;
+    return !entry || entry.status !== "COMPLETED" || !entry.audioUrl;
   });
 
   if (!force && needsRegeneration.length === 0) {
@@ -284,9 +284,9 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
 
   for (const section of sections) {
     const entry = audioMap.get(section.id);
-    if (!entry || force || entry.status !== "COMPLETE") {
+    if (!entry || force || entry.status !== "COMPLETED") {
       await storage.upsertStoryAudio(section.id, voiceId, {
-        status: "QUEUED",
+        status: "PENDING",
         audioUrl: entry?.audioUrl,
         durationSec: entry?.durationSec,
         checksum: entry?.checksum,
@@ -304,7 +304,7 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
 
     for (const section of sections) {
       const current = audioMap.get(section.id);
-      if (!force && current && current.status === "COMPLETE" && current.audioUrl) {
+      if (!force && current && current.status === "COMPLETED" && current.audioUrl) {
         continue;
       }
 
@@ -342,7 +342,7 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
         } as any);
 
         await storage.upsertStoryAudio(section.id, voiceId, {
-          status: "COMPLETE",
+          status: "COMPLETED",
           audioUrl: result.url,
           durationSec: result.durationSec,
           checksum: result.checksum,
@@ -351,7 +351,7 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
         });
       } catch (err) {
         await storage.upsertStoryAudio(section.id, voiceId, {
-          status: "ERROR",
+          status: "FAILED",
           error: err instanceof Error ? err.message : String(err),
           completedAt: new Date(),
         });
@@ -502,7 +502,7 @@ router.get("/api/stories/:slug/download/section/:sectionId", authenticateToken, 
 
   const audioEntries = await storage.getStoryAudioForVoice(story.id, voiceId);
   const entry = audioEntries.find((a) => a.sectionId === sectionId);
-  if (!entry || entry.status !== "COMPLETE" || !entry.audioUrl) {
+  if (!entry || entry.status !== "COMPLETED" || !entry.audioUrl) {
     return res.status(404).json({ error: "Audio not available for this section" });
   }
 
@@ -557,7 +557,7 @@ router.get("/api/stories/:slug/download/full", authenticateToken, ensureStoryMod
   const audioMap = new Map(audioEntries.map((a) => [a.sectionId, a]));
   const ordered = sections
     .map((s) => ({ s, a: audioMap.get(s.id) }))
-    .filter((x) => x.a && x.a.status === "COMPLETE" && x.a.audioUrl) as any[];
+    .filter((x) => x.a && x.a.status === "COMPLETED" && x.a.audioUrl) as any[];
 
   if (ordered.length === 0) {
     return res.status(400).json({ error: "No generated audio to merge" });
