@@ -114,6 +114,15 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
+### 2025-11-29: Transcript Editing
+- Added PATCH `/api/template-videos/:id/transcript` endpoint for admin editing
+- Robust validation: non-empty segments, finite numbers, min 0.05s duration, no overlaps, non-empty text
+- Edits preserve segment timing (start/end) for voice cloning synchronization
+- Persists `transcriptSource: 'admin_edited'`, `editedAt`, `editedBy` metadata
+- Sets `pipelineStatus: 'needs_regeneration'` to flag videos for re-processing
+- Admin UI shows "Edit" button, editable text areas per segment, Save/Cancel
+- Warning banner when transcript needs regeneration
+
 ### 2025-11-29: Segment-by-Segment Audio Sync
 - Implemented proper audio synchronization using segment-by-segment ElevenLabs synthesis
 - Each transcript segment is synthesized individually, then time-stretched to match original timing
@@ -123,13 +132,13 @@ The application supports multiple TTS providers:
 - Fallback to full-text synthesis if no segments available
 
 ### 2025-11-29: Admin Transcript Viewer
-- Added read-only transcript viewer in Admin Video Catalog (`/admin/videos`)
-- Shows actual Gemini AI transcription with timestamps (not editable)
+- Added transcript viewer in Admin Video Catalog (`/admin/videos`)
+- Shows Gemini AI transcription with timestamps
 - Timeline view shows each segment with start/end timestamps
 - Full text view shows complete transcript
-- Displays metadata: source (Gemini AI), duration, segment count, transcribed timestamp
-- New GET endpoint: `GET /api/template-videos/:id/transcript` returns transcript with segments
-- POST endpoint now saves segments with timing for synchronized voice cloning
+- Displays metadata: source (Gemini AI or Edited), duration, segment count, timestamps
+- GET endpoint: `GET /api/template-videos/:id/transcript` returns transcript with segments
+- POST endpoint generates new transcript, PATCH endpoint saves edits
 
 ### 2025-11-29: Advertising Code Removal
 - Completely removed AdBanner component and all ad-related code
