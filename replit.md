@@ -23,7 +23,7 @@ FamFlixW is a full-stack video creation and voice cloning application built with
 - `SESSION_SECRET`: Session cookie secret (min 32 chars)
 
 ### Optional Features
-- **Story Mode** (`FEATURE_STORY_MODE=true`): Requires Redis and S3 configuration
+- **Story Mode** (`FEATURE_STORY_MODE=true`): Works without Redis using synchronous ElevenLabs synthesis. Redis+S3 only needed for background job processing.
 - **Stripe Billing**: Requires `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`
 - **OpenAI**: Requires `OPENAI_API_KEY`
 - **Email**: Requires SMTP configuration
@@ -113,6 +113,12 @@ The application supports multiple TTS providers:
 ```
 
 ## Recent Changes
+
+### 2025-11-29: Advertising Code Removal
+- Completely removed AdBanner component and all ad-related code
+- Removed `/api/ads/preferences` endpoints and schemas from backend
+- Cleaned up Dashboard, VideoLibrary, Stories, and VideoSelectionCatalog pages
+- Created test story "The Magical Forest Adventure" with 4 sections for testing
 
 ### 2025-11-29: Audio Content-Type Fix
 - Fixed "Preview playback failed" error that appeared even when audio played successfully
