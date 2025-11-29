@@ -9,6 +9,7 @@ import { ensureTemplateVideosTable } from '../utils/templateVideos';
 import path from 'path';
 import fs from 'fs/promises';
 import { spawn } from 'child_process';
+import { ElevenLabsProvider } from '../tts/providers/elevenlabs';
 
 const router = Router();
 
@@ -122,6 +123,75 @@ async function persistProjectTranscript(projectId: string | number, segments: an
   const transcriptPath = path.join(projectTranscriptDir, `project-${projectId}.json`);
   await fs.writeFile(transcriptPath, JSON.stringify(normalized, null, 2), 'utf-8');
   return transcriptPath;
+}
+
+// Run ElevenLabs voice replacement - synthesizes audio and replaces it in video
+async function runElevenLabsVoiceReplacement(
+  inputVideoPath: string,
+  outputVideoPath: string,
+  elevenLabsVoiceId: string,
+  transcriptText: string
+): Promise<void> {
+  await fs.mkdir(path.dirname(outputVideoPath), { recursive: true });
+
+  console.log('[elevenlabs] Starting voice replacement with ElevenLabs');
+  console.log('[elevenlabs] Voice ID:', elevenLabsVoiceId);
+  console.log('[elevenlabs] Transcript length:', transcriptText.length, 'characters');
+
+  // Synthesize audio using ElevenLabs
+  const provider = new ElevenLabsProvider();
+  const result = await provider.synthesize({
+    text: transcriptText,
+    voiceRef: elevenLabsVoiceId,
+  });
+
+  // The synthesized audio is saved in the temp directory with the key as filename
+  const tempDir = path.resolve(process.cwd(), 'temp');
+  const tempAudioPath = path.join(tempDir, result.key);
+  
+  console.log('[elevenlabs] Audio synthesized:', tempAudioPath);
+  
+  await new Promise<void>((resolve, reject) => {
+    const ffmpegArgs = [
+      '-y',                     // Overwrite output
+      '-i', inputVideoPath,     // Input video
+      '-i', tempAudioPath,      // Input audio from ElevenLabs
+      '-c:v', 'copy',           // Copy video stream
+      '-map', '0:v:0',          // Use video from first input
+      '-map', '1:a:0',          // Use audio from second input
+      '-shortest',              // End when shortest stream ends
+      outputVideoPath,
+    ];
+
+    console.log('[elevenlabs] Running ffmpeg:', 'ffmpeg', ffmpegArgs.join(' '));
+
+    const proc = spawn('ffmpeg', ffmpegArgs);
+    let stderr = '';
+
+    proc.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        console.log('[elevenlabs] Video processing complete:', outputVideoPath);
+        resolve();
+      } else {
+        reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`));
+      }
+    });
+
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
+    });
+  });
+
+  // Clean up temp audio file
+  try {
+    await fs.unlink(tempAudioPath);
+  } catch (e) {
+    // Ignore cleanup errors
+  }
 }
 
 // Run the Python voice replacement pipeline
@@ -668,22 +738,22 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
         const inputVideoPath = toLocalUploadsPath(templateUrl);
         console.log('[processing] input video path:', inputVideoPath);
 
-        // Resolve voice prompt path from selected voice profile
+        // Resolve voice profile
         const profileId = String(project.voice_profile_id);
         const profile = await storage.getVoiceProfile(profileId);
         if (!profile) {
           throw new Error('Selected voice profile not found');
         }
-        const promptPath = (profile as any).providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
-        if (!promptPath) {
-          throw new Error('Voice profile is missing an audio prompt path');
-        }
-        console.log('[processing] prompt wav path:', promptPath);
 
-        // Validate that the prompt path actually exists before spawning the pipeline
-        if (!(await fs.access(promptPath).then(() => true).catch(() => false))) {
-          throw new Error(`Voice prompt not found on disk: ${promptPath}`);
-        }
+        // Check if this is an ElevenLabs voice profile
+        const providerRef = (profile as any).providerRef || '';
+        const provider = (profile as any).provider || '';
+        const isElevenLabs = provider === 'elevenlabs' || 
+          (providerRef && !providerRef.includes('/') && !providerRef.endsWith('.wav'));
+        
+        console.log('[processing] Voice profile provider:', provider || 'auto-detect');
+        console.log('[processing] Provider ref:', providerRef);
+        console.log('[processing] Using ElevenLabs:', isElevenLabs);
 
         // Determine output file location under uploads/videos
         const outputFileName = `processed-${id}.mp4`;
@@ -697,16 +767,27 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
           templateMetadata?.sourceVideoId ??
           null;
 
+        // Get transcript text - needed for ElevenLabs synthesis
         let transcriptPath: string | null = null;
+        let transcriptText: string = '';
+        
         if (sourceVideoId) {
           try {
             const sourceVideo = await storage.getVideo(sourceVideoId);
             if (sourceVideo?.metadata) {
               const sourceMeta = parseMetadata((sourceVideo as any).metadata);
               const transcriptSegments = (sourceMeta?.pipeline as any)?.transcription?.segments;
-              transcriptPath = await persistProjectTranscript(id, transcriptSegments);
-              if (transcriptPath) {
-                await setProjectProgress(id, 10, 'transcript_ready');
+              if (Array.isArray(transcriptSegments)) {
+                // Extract text from segments for ElevenLabs
+                transcriptText = transcriptSegments
+                  .map((s: any) => s.text?.trim())
+                  .filter(Boolean)
+                  .join(' ');
+                
+                transcriptPath = await persistProjectTranscript(id, transcriptSegments);
+                if (transcriptPath) {
+                  await setProjectProgress(id, 10, 'transcript_ready');
+                }
               }
             }
           } catch (transcriptErr) {
@@ -717,9 +798,37 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
           }
         }
 
-        // Run the Python voice replacement pipeline
+        // If no transcript from source video, try to get it from template metadata
+        if (!transcriptText && templateMetadata?.transcript) {
+          transcriptText = typeof templateMetadata.transcript === 'string' 
+            ? templateMetadata.transcript 
+            : JSON.stringify(templateMetadata.transcript);
+        }
+
         await setProjectProgress(id, transcriptPath ? 20 : 15, 'pipeline_spawn');
-        await runVoiceReplacementPipeline(inputVideoPath, outputVideoPath, promptPath, transcriptPath);
+
+        if (isElevenLabs) {
+          // Use ElevenLabs TTS for voice replacement
+          if (!transcriptText) {
+            throw new Error('No transcript available for ElevenLabs voice synthesis. Please ensure the template video has a transcript.');
+          }
+          console.log('[processing] Using ElevenLabs voice replacement');
+          await runElevenLabsVoiceReplacement(inputVideoPath, outputVideoPath, providerRef, transcriptText);
+        } else {
+          // Use Python pipeline for local voice cloning (F5/RVC)
+          const promptPath = providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
+          if (!promptPath) {
+            throw new Error('Voice profile is missing an audio prompt path');
+          }
+          console.log('[processing] prompt wav path:', promptPath);
+
+          // Validate that the prompt path actually exists before spawning the pipeline
+          if (!(await fs.access(promptPath).then(() => true).catch(() => false))) {
+            throw new Error(`Voice prompt not found on disk: ${promptPath}`);
+          }
+
+          await runVoiceReplacementPipeline(inputVideoPath, outputVideoPath, promptPath, transcriptPath);
+        }
 
         const completionTimestamp = new Date().toISOString();
         // Update project record on success
