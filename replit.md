@@ -114,6 +114,11 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
+### 2025-11-29: Audio Content-Type Fix
+- Fixed "Preview playback failed" error that appeared even when audio played successfully
+- Audio endpoint now detects file extension and sets correct Content-Type header
+- MP3 files from ElevenLabs now served with `audio/mpeg` instead of `audio/wav`
+
 ### 2025-11-29: ElevenLabs Voice Cloning Integration
 - Added real AI voice cloning via ElevenLabs Instant Voice Cloning (IVC) API
 - Created ElevenLabsProvider (`server/tts/providers/elevenlabs.ts`) for:

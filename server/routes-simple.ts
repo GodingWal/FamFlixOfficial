@@ -305,8 +305,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         await fsMod.promises.access(audioFilePath);
 
+        // Set correct Content-Type based on file extension
+        const ext = pathMod.extname(filename).toLowerCase();
+        const contentTypes: Record<string, string> = {
+          '.mp3': 'audio/mpeg',
+          '.wav': 'audio/wav',
+          '.webm': 'audio/webm',
+          '.ogg': 'audio/ogg',
+        };
+        const contentType = contentTypes[ext] || 'audio/mpeg';
+
         // Set headers for streaming
-        res.setHeader('Content-Type', 'audio/wav');
+        res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Cache-Control', 'public, max-age=3600');
 
