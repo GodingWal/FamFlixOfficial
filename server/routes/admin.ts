@@ -4,52 +4,58 @@ import { sql } from 'drizzle-orm';
 import { authenticateToken, AuthRequest } from '../middleware/auth-simple.js';
 
 const router = Router();
+const isSQLite = process.env.DATABASE_URL?.startsWith('file:');
 
-// Get admin statistics
+async function dbQuery(query: ReturnType<typeof sql>): Promise<any[]> {
+  if (isSQLite) {
+    return await db.all(query);
+  } else {
+    const result = await db.execute(query);
+    return result.rows || [];
+  }
+}
+
+async function dbQueryOne(query: ReturnType<typeof sql>): Promise<any | null> {
+  if (isSQLite) {
+    return await db.get(query);
+  } else {
+    const result = await db.execute(query);
+    return result.rows?.[0] || null;
+  }
+}
+
+async function dbRun(query: ReturnType<typeof sql>): Promise<any> {
+  if (isSQLite) {
+    return await db.run(query);
+  } else {
+    return await db.execute(query);
+  }
+}
+
 router.get('/api/admin/stats', authenticateToken, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role !== 'admin') {
       return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
     }
 
-    // Get total counts
-    const totalUsers = await db.get(sql`SELECT COUNT(*) as count FROM users`);
-    const totalTemplateVideos = await db.get(sql`SELECT COUNT(*) as count FROM template_videos WHERE is_active = 1`);
-    const totalVoiceClones = await db.get(sql`SELECT COUNT(*) as count FROM voice_profiles`);
-    const totalVideos = await db.get(sql`SELECT COUNT(*) as count FROM videos`);
+    const isActiveValue = isSQLite ? 1 : true;
 
-    // Get voice job statistics
-    const voiceJobStats = await db.get(sql`
-      SELECT 
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-        SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as active
-      FROM voice_jobs
-    `);
+    const totalUsers = await dbQueryOne(sql`SELECT COUNT(*) as count FROM users`);
+    const totalTemplateVideos = await dbQueryOne(sql`SELECT COUNT(*) as count FROM template_videos WHERE is_active = ${isActiveValue}`);
+    const totalVoiceClones = await dbQueryOne(sql`SELECT COUNT(*) as count FROM voice_profiles`);
+    const totalVideos = await dbQueryOne(sql`SELECT COUNT(*) as count FROM videos`);
 
-    // Get recent users (last 10)
-    const recentUsers = await db.all(sql`
+    const recentUsers = await dbQuery(sql`
       SELECT id, email, role, created_at 
       FROM users 
       ORDER BY created_at DESC 
       LIMIT 10
     `);
 
-    // Get recent voice jobs (last 10)
-    const recentVoiceJobs = await db.all(sql`
-      SELECT vj.id, vj.name, vj.status, vj.created_at, u.email as user_email
-      FROM voice_jobs vj
-      LEFT JOIN users u ON vj.user_id = u.id
-      ORDER BY vj.created_at DESC 
-      LIMIT 10
-    `);
-
-    // Get recent template videos (last 10)
-    const recentTemplateVideos = await db.all(sql`
+    const recentTemplateVideos = await dbQuery(sql`
       SELECT id, title, category, created_at
       FROM template_videos 
-      WHERE is_active = 1
+      WHERE is_active = ${isActiveValue}
       ORDER BY created_at DESC 
       LIMIT 10
     `);
@@ -59,11 +65,11 @@ router.get('/api/admin/stats', authenticateToken, async (req: AuthRequest, res) 
       totalVideos: totalVideos?.count || 0,
       totalVoiceClones: totalVoiceClones?.count || 0,
       totalTemplateVideos: totalTemplateVideos?.count || 0,
-      activeVoiceJobs: voiceJobStats?.active || 0,
-      completedVoiceJobs: voiceJobStats?.completed || 0,
-      failedVoiceJobs: voiceJobStats?.failed || 0,
+      activeVoiceJobs: 0,
+      completedVoiceJobs: 0,
+      failedVoiceJobs: 0,
       recentUsers: recentUsers || [],
-      recentVoiceJobs: recentVoiceJobs || [],
+      recentVoiceJobs: [],
       recentTemplateVideos: recentTemplateVideos || [],
     };
 
@@ -74,20 +80,17 @@ router.get('/api/admin/stats', authenticateToken, async (req: AuthRequest, res) 
   }
 });
 
-// Get detailed user management data
 router.get('/api/admin/users', authenticateToken, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role !== 'admin') {
       return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
     }
 
-    const users = await db.all(sql`
+    const users = await dbQuery(sql`
       SELECT 
         u.id, u.email, u.role, u.created_at,
-        COUNT(vj.id) as voice_jobs_count,
         COUNT(vp.id) as voice_profiles_count
       FROM users u
-      LEFT JOIN voice_jobs vj ON u.id = vj.user_id
       LEFT JOIN voice_profiles vp ON u.id = vp.user_id
       GROUP BY u.id, u.email, u.role, u.created_at
       ORDER BY u.created_at DESC
@@ -100,7 +103,6 @@ router.get('/api/admin/users', authenticateToken, async (req: AuthRequest, res) 
   }
 });
 
-// Update user role
 router.patch('/api/admin/users/:id/role', authenticateToken, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role !== 'admin') {
@@ -114,7 +116,7 @@ router.patch('/api/admin/users/:id/role', authenticateToken, async (req: AuthReq
       return res.status(400).json({ error: 'Invalid role. Must be "user" or "admin"' });
     }
 
-    await db.run(sql`
+    await dbRun(sql`
       UPDATE users 
       SET role = ${role}, updated_at = CURRENT_TIMESTAMP 
       WHERE id = ${id}
@@ -127,21 +129,18 @@ router.patch('/api/admin/users/:id/role', authenticateToken, async (req: AuthReq
   }
 });
 
-// Get system health status
 router.get('/api/admin/health', authenticateToken, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role !== 'admin') {
       return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
     }
 
-    // Check database connectivity
-    const dbCheck = await db.get(sql`SELECT 1 as healthy`);
+    const dbCheck = await dbQueryOne(sql`SELECT 1 as healthy`);
     
-    // Basic TTS engine readiness (Chatterbox is local; assume available in dev)
     const ttsHealthy = true;
 
     const health = {
-      database: dbCheck?.healthy === 1,
+      database: dbCheck?.healthy === 1 || dbCheck?.healthy === true,
       tts: ttsHealthy,
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),

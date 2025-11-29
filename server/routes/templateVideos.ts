@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { db, pool } from '../db.js';
 import { sql } from 'drizzle-orm';
 import multer from 'multer';
 import fs from 'fs/promises';
@@ -10,8 +10,8 @@ import { adminVideoPipelineService } from '../services/adminVideoPipelineService
 import { ensureTemplateVideosTable } from '../utils/templateVideos';
 
 const router = Router();
+const isSQLite = process.env.DATABASE_URL?.startsWith('file:');
 
-// Ensure uploads directory exists
 const uploadsRoot = path.join(process.cwd(), 'uploads');
 const videosDir = path.join(uploadsRoot, 'videos');
 const thumbnailsDir = path.join(uploadsRoot, 'thumbnails');
@@ -51,7 +51,32 @@ function parseMetadata(value: unknown): Record<string, unknown> {
   return {};
 }
 
-// Multer config (disk storage)
+async function dbQuery(query: ReturnType<typeof sql>): Promise<any[]> {
+  if (isSQLite) {
+    return await db.all(query);
+  } else {
+    const result = await db.execute(query);
+    return result.rows || [];
+  }
+}
+
+async function dbQueryOne(query: ReturnType<typeof sql>): Promise<any | null> {
+  if (isSQLite) {
+    return await db.get(query);
+  } else {
+    const result = await db.execute(query);
+    return result.rows?.[0] || null;
+  }
+}
+
+async function dbRun(query: ReturnType<typeof sql>): Promise<any> {
+  if (isSQLite) {
+    return await db.run(query);
+  } else {
+    return await db.execute(query);
+  }
+}
+
 const storageConfig = multer.diskStorage({
   destination: async function (req, file, cb) {
     if (file.fieldname === 'video') {
@@ -72,7 +97,7 @@ const storageConfig = multer.diskStorage({
 
 const upload = multer({
   storage: storageConfig,
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 },
 });
 
 const mapTemplateVideoRow = (row: any) => {
@@ -108,13 +133,13 @@ const mapTemplateVideoRow = (row: any) => {
   };
 };
 
-// Get all active template videos
 router.get('/api/template-videos', async (req, res) => {
   try {
     await ensureTemplateVideosTable();
-    const videos = await db.all(sql`
+    const isActiveValue = isSQLite ? 1 : true;
+    const videos = await dbQuery(sql`
       SELECT * FROM template_videos 
-      WHERE is_active = 1 
+      WHERE is_active = ${isActiveValue}
       ORDER BY category, created_at DESC
     `);
 
@@ -126,14 +151,14 @@ router.get('/api/template-videos', async (req, res) => {
   }
 });
 
-// Get single template video by ID
 router.get('/api/template-videos/:id', async (req, res) => {
   try {
     const { id } = req.params;
     await ensureTemplateVideosTable();
-    const video = await db.get(sql`
+    const isActiveValue = isSQLite ? 1 : true;
+    const video = await dbQueryOne(sql`
       SELECT * FROM template_videos 
-      WHERE id = ${id} AND is_active = 1
+      WHERE id = ${id} AND is_active = ${isActiveValue}
     `);
 
     if (!video) {
@@ -147,14 +172,14 @@ router.get('/api/template-videos/:id', async (req, res) => {
   }
 });
 
-// Get videos by category
 router.get('/api/template-videos/category/:category', async (req, res) => {
   try {
     const { category } = req.params;
     await ensureTemplateVideosTable();
-    const videos = await db.all(sql`
+    const isActiveValue = isSQLite ? 1 : true;
+    const videos = await dbQuery(sql`
       SELECT * FROM template_videos 
-      WHERE category = ${category} AND is_active = 1 
+      WHERE category = ${category} AND is_active = ${isActiveValue}
       ORDER BY created_at DESC
     `);
 
@@ -166,7 +191,6 @@ router.get('/api/template-videos/category/:category', async (req, res) => {
   }
 });
 
-// Admin upload endpoint for template videos
 router.post('/api/template-videos', authenticateToken, upload.fields([
   { name: 'video', maxCount: 1 },
   { name: 'thumbnail', maxCount: 1 },
@@ -177,7 +201,6 @@ router.post('/api/template-videos', authenticateToken, upload.fields([
   let adminVideoId: string | null = null;
   try {
     if (req.user?.role !== 'admin') {
-      // Clean up files if auth fails (though middleware should catch this first)
       if (req.files) {
         const files = req.files as { [fieldname: string]: Express.Multer.File[] };
         if (files.video?.[0]) await fs.unlink(files.video[0].path).catch(() => { });
@@ -214,24 +237,35 @@ router.post('/api/template-videos', authenticateToken, upload.fields([
     }
 
     const nowIso = new Date().toISOString();
-    const result = await db.run(sql`
-      INSERT INTO template_videos (
-        title, description, thumbnail_url, video_url, duration, category, tags, difficulty, is_active, metadata, created_at, updated_at
-      ) VALUES (
-        ${title}, ${description ?? null}, ${thumbnailUrl}, ${videoUrl}, ${durationNum}, ${category}, ${tagsJson}, ${difficulty}, 1, ${JSON.stringify({})}, ${nowIso}, ${nowIso}
-      )
-    `);
+    const isActiveValue = isSQLite ? 1 : true;
+    
+    if (isSQLite) {
+      const result = await db.run(sql`
+        INSERT INTO template_videos (
+          title, description, thumbnail_url, video_url, duration, category, tags, difficulty, is_active, metadata, created_at, updated_at
+        ) VALUES (
+          ${title}, ${description ?? null}, ${thumbnailUrl}, ${videoUrl}, ${durationNum}, ${category}, ${tagsJson}, ${difficulty}, ${isActiveValue}, ${JSON.stringify({})}, ${nowIso}, ${nowIso}
+        )
+      `);
+      const inserted = await db.get(sql`
+        SELECT * FROM template_videos WHERE id = ${result.lastInsertRowid}
+      `);
+      templateId = inserted?.id;
+    } else {
+      const result = await db.execute(sql`
+        INSERT INTO template_videos (
+          title, description, thumbnail_url, video_url, duration, category, tags, difficulty, is_active, metadata, created_at, updated_at
+        ) VALUES (
+          ${title}, ${description ?? null}, ${thumbnailUrl}, ${videoUrl}, ${durationNum}, ${category}, ${tagsJson}::jsonb, ${difficulty}, ${isActiveValue}, ${JSON.stringify({})}::jsonb, ${nowIso}::timestamp, ${nowIso}::timestamp
+        ) RETURNING id
+      `);
+      templateId = result.rows?.[0]?.id;
+    }
 
-    const inserted = await db.get(sql`
-      SELECT * FROM template_videos WHERE id = ${result.lastInsertRowid}
-    `);
-
-    if (!inserted) {
+    if (!templateId) {
       throw new Error('Failed to retrieve inserted template video');
     }
-    templateId = inserted.id;
 
-    // Create a matching admin-provided video entry for pipeline processing
     const adminVideo = await storage.createAdminProvidedVideo({
       title,
       description: description ?? null,
@@ -243,7 +277,7 @@ router.post('/api/template-videos', authenticateToken, upload.fields([
       createdBy: req.user!.id,
       metadata: {
         source: 'template_video',
-        templateId: inserted.id,
+        templateId: templateId,
       },
     } as any);
     adminVideoId = adminVideo.id;
@@ -253,10 +287,10 @@ router.post('/api/template-videos', authenticateToken, upload.fields([
       pipelineStatus: 'queued',
     };
 
-    await db.run(sql`
+    await dbRun(sql`
       UPDATE template_videos
-      SET metadata = ${JSON.stringify(templateMetadata)}, updated_at = ${new Date().toISOString()}
-      WHERE id = ${inserted.id}
+      SET metadata = ${isSQLite ? JSON.stringify(templateMetadata) : sql`${JSON.stringify(templateMetadata)}::jsonb`}, updated_at = ${new Date().toISOString()}${isSQLite ? sql`` : sql`::timestamp`}
+      WHERE id = ${templateId}
     `);
 
     try {
@@ -264,9 +298,7 @@ router.post('/api/template-videos', authenticateToken, upload.fields([
     } catch (pipelineError) {
       console.error('Failed to enqueue admin pipeline for template video:', pipelineError);
       if (templateId) {
-        await db.run(sql`
-          DELETE FROM template_videos WHERE id = ${templateId}
-        `);
+        await dbRun(sql`DELETE FROM template_videos WHERE id = ${templateId}`);
       }
       if (destPath) {
         await fs.unlink(destPath).catch(() => undefined);
@@ -280,17 +312,12 @@ router.post('/api/template-videos', authenticateToken, upload.fields([
       return res.status(500).json({ error: 'Template video saved, but preprocessing pipeline failed to start.' });
     }
 
-    const updated = await db.get(sql`
-      SELECT * FROM template_videos WHERE id = ${inserted.id}
-    `);
-
+    const updated = await dbQueryOne(sql`SELECT * FROM template_videos WHERE id = ${templateId}`);
     res.status(201).json(mapTemplateVideoRow(updated));
   } catch (error) {
     console.error('Upload template video error:', error);
     if (templateId) {
-      await db.run(sql`
-        DELETE FROM template_videos WHERE id = ${templateId}
-      `).catch(() => undefined);
+      await dbRun(sql`DELETE FROM template_videos WHERE id = ${templateId}`).catch(() => undefined);
     }
     if (destPath) {
       await fs.unlink(destPath).catch(() => undefined);
@@ -313,7 +340,7 @@ router.patch('/api/template-videos/:id', authenticateToken, async (req: AuthRequ
 
     await ensureTemplateVideosTable();
     const { id } = req.params;
-    const video = await db.get(sql`SELECT * FROM template_videos WHERE id = ${id}`);
+    const video = await dbQueryOne(sql`SELECT * FROM template_videos WHERE id = ${id}`);
     if (!video) {
       return res.status(404).json({ error: 'Template video not found' });
     }
@@ -353,26 +380,39 @@ router.patch('/api/template-videos/:id', authenticateToken, async (req: AuthRequ
       } else {
         tagsValue = JSON.stringify([]);
       }
-      assignments.push(sql`tags = ${tagsValue}`);
+      if (isSQLite) {
+        assignments.push(sql`tags = ${tagsValue}`);
+      } else {
+        assignments.push(sql`tags = ${tagsValue}::jsonb`);
+      }
     }
     if (isActive !== undefined) {
-      const activeValue = typeof isActive === 'boolean' ? (isActive ? 1 : 0) : Number(isActive) ? 1 : 0;
-      assignments.push(sql`is_active = ${activeValue}`);
+      if (isSQLite) {
+        const activeValue = typeof isActive === 'boolean' ? (isActive ? 1 : 0) : Number(isActive) ? 1 : 0;
+        assignments.push(sql`is_active = ${activeValue}`);
+      } else {
+        const activeValue = typeof isActive === 'boolean' ? isActive : Boolean(isActive);
+        assignments.push(sql`is_active = ${activeValue}`);
+      }
     }
 
     if (!assignments.length) {
       return res.status(400).json({ error: 'No updates provided' });
     }
 
-    assignments.push(sql`updated_at = ${new Date().toISOString()}`);
+    if (isSQLite) {
+      assignments.push(sql`updated_at = ${new Date().toISOString()}`);
+    } else {
+      assignments.push(sql`updated_at = ${new Date().toISOString()}::timestamp`);
+    }
 
-    await db.run(sql`
+    await dbRun(sql`
       UPDATE template_videos
       SET ${sql.join(assignments, sql`, `)}
       WHERE id = ${id}
     `);
 
-    const updated = await db.get(sql`SELECT * FROM template_videos WHERE id = ${id}`);
+    const updated = await dbQueryOne(sql`SELECT * FROM template_videos WHERE id = ${id}`);
     res.json(mapTemplateVideoRow(updated));
   } catch (error) {
     console.error('Update template video error:', error);
@@ -388,19 +428,19 @@ router.delete('/api/template-videos/:id', authenticateToken, async (req: AuthReq
 
     await ensureTemplateVideosTable();
     const { id } = req.params;
-    const template = await db.get(sql`SELECT * FROM template_videos WHERE id = ${id}`);
+    const template = await dbQueryOne(sql`SELECT * FROM template_videos WHERE id = ${id}`);
     if (!template) {
       return res.status(404).json({ error: 'Template video not found' });
     }
 
-    await db.run(sql`DELETE FROM template_videos WHERE id = ${id}`);
+    await dbRun(sql`DELETE FROM template_videos WHERE id = ${id}`);
 
     await safeUnlinkByUrl(template.video_url);
     await safeUnlinkByUrl(template.thumbnail_url);
 
     const meta = parseMetadata(template.metadata);
     if (meta.sourceVideoId) {
-      await storage.deleteVideo(meta.sourceVideoId).catch(() => undefined);
+      await storage.deleteVideo(meta.sourceVideoId as string).catch(() => undefined);
     }
 
     res.json({ message: 'Template video deleted' });

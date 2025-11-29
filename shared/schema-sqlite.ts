@@ -122,7 +122,7 @@ export const voiceProfiles = sqliteTable("voice_profiles", {
   userId: text("user_id").references(() => users.id).notNull(),
   familyId: text("family_id").references(() => families.id),
   displayName: text("display_name", { length: 100 }),
-  provider: text("provider", { length: 50 }).default("CHATTERBOX"),
+  provider: text("provider", { length: 50 }).default("F5"),
   providerRef: text("provider_ref"),
   audioSampleUrl: text("audio_sample_url"),
   modelId: text("model_id"), // External AI service model ID

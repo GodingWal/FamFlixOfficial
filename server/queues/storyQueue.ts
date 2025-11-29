@@ -1,17 +1,18 @@
 import { Queue } from "bullmq";
-
+import { config } from "../config";
 import { redisConnection } from "./connection";
 
-// BullMQ queue names cannot contain ':', so use an underscore.
 export const STORY_QUEUE_NAME = "story_synthesize";
 
-export const storyQueue = new Queue(STORY_QUEUE_NAME, {
-  connection: redisConnection,
-  defaultJobOptions: {
-    removeOnComplete: 100,
-    removeOnFail: 50,
-  },
-});
+export const storyQueue = config.FEATURE_STORY_MODE && redisConnection 
+  ? new Queue(STORY_QUEUE_NAME, {
+      connection: redisConnection,
+      defaultJobOptions: {
+        removeOnComplete: 100,
+        removeOnFail: 50,
+      },
+    })
+  : null;
 
 export interface StorySynthesisJobData {
   storyId: string;
@@ -20,6 +21,9 @@ export interface StorySynthesisJobData {
 }
 
 export function enqueueStorySynthesis(data: StorySynthesisJobData) {
+  if (!storyQueue) {
+    throw new Error("Story queue is not available. FEATURE_STORY_MODE must be enabled with Redis configured.");
+  }
   return storyQueue.add("synthesize", data, {
     jobId: `${data.storyId}:${data.voiceId}`,
   });

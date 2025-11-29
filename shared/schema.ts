@@ -127,7 +127,7 @@ export const voiceProfiles = pgTable("voice_profiles", {
   userId: uuid("user_id").references(() => users.id).notNull(),
   familyId: uuid("family_id").references(() => families.id),
   displayName: varchar("display_name", { length: 100 }),
-  provider: ttsProviderEnum("provider").default("CHATTERBOX").notNull(),
+  provider: ttsProviderEnum("provider").default("F5").notNull(),
   providerRef: text("provider_ref"),
   audioSampleUrl: text("audio_sample_url"),
   modelId: text("model_id"), // External AI service model ID
@@ -463,7 +463,7 @@ export const insertVideoSchema = createInsertSchema(videos).omit({
 });
 
 export const insertVoiceProfileSchema = createInsertSchema(voiceProfiles, {
-  provider: ttsProviderZEnum.default("CHATTERBOX"),
+  provider: ttsProviderZEnum.default("F5"),
 }).omit({
   id: true,
   createdAt: true,

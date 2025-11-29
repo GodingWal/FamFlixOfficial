@@ -6,6 +6,7 @@ FamFlixW is a full-stack video creation and voice cloning application built with
 - **Backend**: Express.js + TypeScript
 - **Database**: PostgreSQL (Replit built-in)
 - **ORM**: Drizzle ORM
+- **Voice Cloning**: F5/RVC providers (AI-powered)
 
 ## Architecture
 - **Monorepo Structure**: Client and server code in single repository
@@ -37,6 +38,12 @@ The PostgreSQL database includes:
 - Uses Drizzle ORM with dual support for SQLite (dev) and PostgreSQL (production)
 - Migration files in `server/db/migrations/`
 - Schema defined in `shared/schema.ts` (PostgreSQL) and `shared/schema-sqlite.ts` (SQLite)
+
+### PostgreSQL Compatibility
+The codebase includes helper functions for database operations that work with both SQLite and PostgreSQL:
+- `dbQuery()` - Returns array of rows (replaces db.all for SQLite)
+- `dbQueryOne()` - Returns single row (replaces db.get for SQLite)
+- `dbRun()` - Executes statement (replaces db.run for SQLite)
 
 ## Development Workflow
 
@@ -72,10 +79,16 @@ The application supports both SQLite (file-based) and PostgreSQL. The database t
 - SQLite: `file:./famflix.db`
 - PostgreSQL: `postgresql://...`
 
+### Voice Cloning Providers
+The application supports multiple TTS providers:
+- **F5**: Default provider for speech synthesis
+- **RVC**: Used for singing/vocal cloning
+- Additional providers can be configured via the `TTS_PROVIDER` env var
+
 ### Known Warnings
-- **Redis Connection Errors**: Expected when `FEATURE_STORY_MODE=true` but Redis is not configured
 - **GPU/Ollama Warnings**: Expected in cloud environment, app falls back to simulation mode
 - **Stripe Warnings**: Expected when Stripe keys are not configured
+- **Redis Warnings**: Only shown when FEATURE_STORY_MODE is enabled without Redis
 
 ## File Structure
 ```
@@ -91,15 +104,26 @@ The application supports both SQLite (file-based) and PostgreSQL. The database t
 │   ├── db/          # Database migrations and schema
 │   ├── routes/      # API routes
 │   ├── services/    # Business logic
+│   ├── queues/      # Background job queues (Redis-based)
+│   ├── workers/     # Background workers
 │   └── middleware/  # Auth, security, rate limiting
 ├── shared/          # Shared types and schemas
 └── scripts/         # Utility scripts
 ```
 
-## Recent Changes (Replit Setup)
-- **2024-11-29**: Initial Replit environment setup
-  - Configured PostgreSQL database with all required tables
-  - Fixed `server/utils/templateVideos.ts` to support PostgreSQL (added `db.execute()` for PG)
-  - Updated `vite.config.ts` to bind to 0.0.0.0:5000
-  - Configured deployment as autoscale
-  - Set up development workflow on port 5000
+## Recent Changes
+
+### 2025-11-29: Replit Environment Setup Complete
+- Configured PostgreSQL database with all required tables and enums
+- Fixed SQLite-to-PostgreSQL compatibility in route handlers:
+  - `server/routes/templateVideos.ts` - Added dbQuery/dbQueryOne/dbRun helpers
+  - `server/routes/admin.ts` - Added dbQuery/dbQueryOne/dbRun helpers
+  - `server/utils/templateVideos.ts` - Added db.execute() for PostgreSQL
+- Made Redis connections conditional (only when FEATURE_STORY_MODE enabled):
+  - `server/queues/connection.ts` - Lazy Redis connection
+  - `server/queues/storyQueue.ts` - Null-safe queue creation
+  - `server/workers/storyWorker.ts` - Null-safe worker creation
+- Updated default TTS provider from CHATTERBOX to F5 in schema files
+- Configured Vite with `allowedHosts: true` for Replit proxy
+- Set up development workflow on port 5000
+- Configured deployment as autoscale
