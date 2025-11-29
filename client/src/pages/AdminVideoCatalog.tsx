@@ -11,9 +11,24 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { apiRequest } from "@/lib/queryClient";
+
+interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+interface TranscriptData {
+  transcript: string;
+  segments: TranscriptSegment[];
+  transcribedAt: string | null;
+  duration: number | null;
+  source: string;
+}
 
 interface TemplateVideo {
   id: number;
@@ -35,14 +50,23 @@ interface TemplateVideo {
 
 const difficultyOptions = ["easy", "medium", "hard"];
 
+function formatTimestamp(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 100);
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+}
+
 export default function AdminVideoCatalog() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [formState, setFormState] = useState<Partial<TemplateVideo> & { tagsInput?: string; transcriptInput?: string }>({});
+  const [formState, setFormState] = useState<Partial<TemplateVideo> & { tagsInput?: string }>({});
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptData, setTranscriptData] = useState<TranscriptData | null>(null);
+  const [isLoadingTranscript, setIsLoadingTranscript] = useState(false);
 
   const { data, isLoading } = useQuery<TemplateVideo[]>({
     queryKey: ["/api/template-videos", "admin"],
@@ -62,13 +86,33 @@ export default function AdminVideoCatalog() {
   useEffect(() => {
     if (!selectedVideo) {
       setFormState({});
+      setTranscriptData(null);
       return;
     }
     setFormState({
       ...selectedVideo,
       tagsInput: selectedVideo.tags.join(", "),
-      transcriptInput: selectedVideo.metadata?.transcript || "",
     });
+    
+    const loadTranscript = async () => {
+      setIsLoadingTranscript(true);
+      try {
+        const response = await fetch(`/api/template-videos/${selectedVideo.id}/transcript`, {
+          credentials: "include",
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setTranscriptData(data);
+        } else {
+          setTranscriptData(null);
+        }
+      } catch {
+        setTranscriptData(null);
+      } finally {
+        setIsLoadingTranscript(false);
+      }
+    };
+    loadTranscript();
   }, [selectedVideo]);
 
   const updateMutation = useMutation({
@@ -82,7 +126,6 @@ export default function AdminVideoCatalog() {
         duration: formState.duration,
         tags: formState.tagsInput?.split(",").map((tag) => tag.trim()).filter(Boolean) ?? [],
         isActive: formState.isActive,
-        transcript: formState.transcriptInput || null,
       };
       const response = await apiRequest("PATCH", `/api/template-videos/${selectedVideo.id}`, payload);
       if (!response.ok) {
@@ -321,12 +364,12 @@ export default function AdminVideoCatalog() {
                     />
                   </div>
 
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     <div className="flex items-center justify-between">
-                      <Label>Transcript</Label>
+                      <Label className="text-base font-semibold">AI Transcript</Label>
                       <Button
                         type="button"
-                        variant="outline"
+                        variant={transcriptData ? "outline" : "default"}
                         size="sm"
                         disabled={isTranscribing}
                         onClick={async () => {
@@ -339,8 +382,14 @@ export default function AdminVideoCatalog() {
                               throw new Error(error.error || "Failed to generate transcript");
                             }
                             const data = await response.json();
-                            setFormState((state) => ({ ...state, transcriptInput: data.transcript || "" }));
-                            toast({ title: "Transcript generated", description: "Review and save to confirm." });
+                            setTranscriptData({
+                              transcript: data.transcript,
+                              segments: data.segments || [],
+                              transcribedAt: data.transcribedAt,
+                              duration: data.duration,
+                              source: 'gemini_ai'
+                            });
+                            toast({ title: "Transcript generated", description: `${data.segments?.length || 0} segments transcribed.` });
                             queryClient.invalidateQueries({ queryKey: ["/api/template-videos", "admin"] });
                           } catch (error: any) {
                             toast({
@@ -353,19 +402,77 @@ export default function AdminVideoCatalog() {
                           }
                         }}
                       >
-                        {isTranscribing ? "Generating..." : "Generate with AI"}
+                        {isTranscribing ? "Transcribing..." : transcriptData ? "Re-transcribe" : "Generate with AI"}
                       </Button>
                     </div>
-                    <Textarea
-                      value={formState.transcriptInput ?? ""}
-                      onChange={(event) => setFormState((state) => ({ ...state, transcriptInput: event.target.value }))}
-                      rows={6}
-                      placeholder="No transcript available. Click 'Generate with AI' to transcribe the video audio, or enter manually."
-                      className="font-mono text-sm"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      This transcript will be used when processing videos with voice cloning.
-                    </p>
+                    
+                    {isLoadingTranscript ? (
+                      <div className="space-y-2">
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-3/4" />
+                        <Skeleton className="h-4 w-5/6" />
+                      </div>
+                    ) : !transcriptData ? (
+                      <div className="rounded-lg border border-dashed bg-muted/20 p-6 text-center">
+                        <p className="text-sm text-muted-foreground">No transcript available.</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Click "Generate with AI" to transcribe the video using Gemini AI.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                          <Badge variant="secondary">Gemini AI</Badge>
+                          {transcriptData.duration && (
+                            <Badge variant="outline">{Math.round(transcriptData.duration)}s duration</Badge>
+                          )}
+                          {transcriptData.segments.length > 0 && (
+                            <Badge variant="outline">{transcriptData.segments.length} segments</Badge>
+                          )}
+                          {transcriptData.transcribedAt && (
+                            <span className="text-muted-foreground">
+                              Transcribed: {new Date(transcriptData.transcribedAt).toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                        
+                        <Tabs defaultValue="segments" className="w-full">
+                          <TabsList className="grid w-full grid-cols-2">
+                            <TabsTrigger value="segments">Timeline</TabsTrigger>
+                            <TabsTrigger value="fulltext">Full Text</TabsTrigger>
+                          </TabsList>
+                          <TabsContent value="segments" className="mt-3">
+                            <ScrollArea className="h-[200px] rounded-md border bg-muted/10 p-3">
+                              {transcriptData.segments.length > 0 ? (
+                                <div className="space-y-2">
+                                  {transcriptData.segments.map((segment, index) => (
+                                    <div key={index} className="flex gap-3 text-sm">
+                                      <span className="font-mono text-xs text-muted-foreground whitespace-nowrap min-w-[100px]">
+                                        {formatTimestamp(segment.start)} - {formatTimestamp(segment.end)}
+                                      </span>
+                                      <span className="text-foreground">{segment.text}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-sm text-muted-foreground">No timing segments available.</p>
+                              )}
+                            </ScrollArea>
+                          </TabsContent>
+                          <TabsContent value="fulltext" className="mt-3">
+                            <div className="rounded-md border bg-muted/10 p-3">
+                              <pre className="whitespace-pre-wrap text-sm font-mono text-foreground leading-relaxed max-h-[200px] overflow-y-auto">
+                                {transcriptData.transcript}
+                              </pre>
+                            </div>
+                          </TabsContent>
+                        </Tabs>
+                        
+                        <p className="text-xs text-muted-foreground">
+                          This transcript with timestamps is used for synchronized voice cloning.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-3">

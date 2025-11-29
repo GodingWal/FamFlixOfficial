@@ -430,6 +430,45 @@ router.patch('/api/template-videos/:id', authenticateToken, async (req: AuthRequ
   }
 });
 
+router.get('/api/template-videos/:id/transcript', authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
+    }
+
+    await ensureTemplateVideosTable();
+    const { id } = req.params;
+    const template = await dbQueryOne(sql`SELECT * FROM template_videos WHERE id = ${id}`);
+    if (!template) {
+      return res.status(404).json({ error: 'Template video not found' });
+    }
+
+    const metadata = parseMetadata(template.metadata);
+    const transcript = metadata.transcript || null;
+    const segments = metadata.transcriptSegments || [];
+    const transcribedAt = metadata.transcribedAt || null;
+    const duration = metadata.transcriptDuration || null;
+
+    if (!transcript) {
+      return res.status(404).json({ 
+        error: 'No transcript available', 
+        message: 'Use the transcribe endpoint to generate a transcript' 
+      });
+    }
+
+    res.json({
+      transcript,
+      segments,
+      transcribedAt,
+      duration,
+      source: 'gemini_ai'
+    });
+  } catch (error) {
+    console.error('Get template transcript error:', error);
+    res.status(500).json({ error: 'Failed to get transcript' });
+  }
+});
+
 router.post('/api/template-videos/:id/transcribe', authenticateToken, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role !== 'admin') {
@@ -464,7 +503,13 @@ router.post('/api/template-videos/:id/transcribe', authenticateToken, async (req
     const result = await transcriptionService.transcribeVideo(videoPath);
     
     const existingMeta = parseMetadata(template.metadata);
-    const updatedMeta = { ...existingMeta, transcript: result.fullText };
+    const updatedMeta = { 
+      ...existingMeta, 
+      transcript: result.fullText,
+      transcriptSegments: result.segments,
+      transcriptDuration: result.duration,
+      transcribedAt: new Date().toISOString()
+    };
     
     if (isSQLite) {
       await dbRun(sql`
@@ -480,11 +525,12 @@ router.post('/api/template-videos/:id/transcribe', authenticateToken, async (req
       `);
     }
 
-    console.log(`[templateVideos] Transcription complete for template ${id}: ${result.fullText.length} characters`);
+    console.log(`[templateVideos] Transcription complete for template ${id}: ${result.fullText.length} characters, ${result.segments.length} segments`);
     res.json({ 
       transcript: result.fullText,
+      segments: result.segments,
       duration: result.duration,
-      segments: result.segments.length
+      transcribedAt: updatedMeta.transcribedAt
     });
   } catch (error) {
     console.error('Transcribe template video error:', error);

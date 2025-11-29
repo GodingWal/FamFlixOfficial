@@ -114,20 +114,22 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
-### 2025-11-29: Video Processing Cutoff Fix
-- Fixed video being cut off at the end when synthesized audio is shorter than original video
-- Removed `-shortest` ffmpeg flag that was causing premature video termination
-- Added `getMediaDuration()` helper to get video/audio duration using ffprobe
-- Added `padAudioToMatchVideo()` to pad synthesized audio with silence to match video length
-- Audio now properly encoded as AAC for better compatibility
-- Note: Sync timing may still differ from original since TTS synthesizes as one block (not segment-by-segment)
+### 2025-11-29: Segment-by-Segment Audio Sync
+- Implemented proper audio synchronization using segment-by-segment ElevenLabs synthesis
+- Each transcript segment is synthesized individually, then time-stretched to match original timing
+- Added `timeStretchAudio()` function using ffmpeg's atempo filter (handles ratios outside 0.5-2.0)
+- Added `generateSilence()` and `concatenateAudioFiles()` helpers for audio processing
+- Gaps between segments are preserved with silence
+- Fallback to full-text synthesis if no segments available
 
-### 2025-11-29: Admin Transcript Management
-- Added transcript viewing and editing in Admin Video Catalog (`/admin/videos`)
-- Transcripts are stored in template video metadata and used during voice cloning
-- Added "Generate with AI" button to auto-transcribe videos using Gemini AI
-- New API endpoint: `POST /api/template-videos/:id/transcribe` for on-demand transcription
-- PATCH endpoint now supports `transcript` field for saving edited transcripts
+### 2025-11-29: Admin Transcript Viewer
+- Added read-only transcript viewer in Admin Video Catalog (`/admin/videos`)
+- Shows actual Gemini AI transcription with timestamps (not editable)
+- Timeline view shows each segment with start/end timestamps
+- Full text view shows complete transcript
+- Displays metadata: source (Gemini AI), duration, segment count, transcribed timestamp
+- New GET endpoint: `GET /api/template-videos/:id/transcript` returns transcript with segments
+- POST endpoint now saves segments with timing for synchronized voice cloning
 
 ### 2025-11-29: Advertising Code Removal
 - Completely removed AdBanner component and all ad-related code

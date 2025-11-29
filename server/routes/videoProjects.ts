@@ -126,7 +126,7 @@ async function persistProjectTranscript(projectId: string | number, segments: an
   return transcriptPath;
 }
 
-// Get video duration using ffprobe
+// Get video/audio duration using ffprobe
 async function getMediaDuration(filePath: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const proc = spawn('ffprobe', [
@@ -166,35 +166,47 @@ async function getMediaDuration(filePath: string): Promise<number> {
   });
 }
 
-// Pad audio to match a target duration by adding silence at the end
-async function padAudioToMatchVideo(
-  audioPath: string, 
-  targetDuration: number, 
+// Time-stretch an audio file to match a target duration using atempo filter
+// atempo range is 0.5-2.0, so we may need to chain multiple filters
+async function timeStretchAudio(
+  inputPath: string,
+  targetDuration: number,
   outputPath: string
 ): Promise<void> {
-  const audioDuration = await getMediaDuration(audioPath);
+  const currentDuration = await getMediaDuration(inputPath);
   
-  console.log(`[elevenlabs] Audio duration: ${audioDuration.toFixed(2)}s, Video duration: ${targetDuration.toFixed(2)}s`);
-  
-  if (audioDuration >= targetDuration) {
-    // Audio is long enough, just copy it
-    await fs.copyFile(audioPath, outputPath);
-    console.log('[elevenlabs] Audio is longer than or equal to video, no padding needed');
+  if (Math.abs(currentDuration - targetDuration) < 0.05) {
+    // Close enough, just copy
+    await fs.copyFile(inputPath, outputPath);
     return;
   }
   
-  // Need to pad with silence
-  const paddingNeeded = targetDuration - audioDuration;
-  console.log(`[elevenlabs] Padding audio with ${paddingNeeded.toFixed(2)}s of silence`);
+  const ratio = currentDuration / targetDuration;
+  console.log(`[elevenlabs] Time-stretching: ${currentDuration.toFixed(2)}s -> ${targetDuration.toFixed(2)}s (ratio: ${ratio.toFixed(3)})`);
+  
+  // Build atempo filter chain (each atempo must be between 0.5 and 2.0)
+  const atempoFilters: string[] = [];
+  let remainingRatio = ratio;
+  
+  while (remainingRatio > 2.0) {
+    atempoFilters.push('atempo=2.0');
+    remainingRatio /= 2.0;
+  }
+  while (remainingRatio < 0.5) {
+    atempoFilters.push('atempo=0.5');
+    remainingRatio /= 0.5;
+  }
+  atempoFilters.push(`atempo=${remainingRatio.toFixed(4)}`);
+  
+  const filterChain = atempoFilters.join(',');
   
   return new Promise((resolve, reject) => {
-    // Use ffmpeg to add silence padding at the end
     const proc = spawn('ffmpeg', [
       '-y',
-      '-i', audioPath,
-      '-af', `apad=whole_dur=${targetDuration}`,
-      '-c:a', 'libmp3lame',  // Re-encode to ensure proper padding
-      '-q:a', '2',
+      '-i', inputPath,
+      '-af', filterChain,
+      '-c:a', 'pcm_s16le',  // Lossless for intermediate files
+      '-ar', '44100',
       outputPath
     ]);
     
@@ -207,81 +219,260 @@ async function padAudioToMatchVideo(
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`Failed to pad audio: ${stderr.slice(-500)}`));
+        reject(new Error(`Time-stretch failed: ${stderr.slice(-500)}`));
       }
     });
     
     proc.on('error', (err) => {
-      reject(new Error(`Failed to spawn ffmpeg for padding: ${err.message}`));
+      reject(new Error(`Failed to spawn ffmpeg for time-stretch: ${err.message}`));
     });
   });
 }
 
-// Run ElevenLabs voice replacement - synthesizes audio and replaces it in video
+// Generate silence of specified duration
+async function generateSilence(duration: number, outputPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', [
+      '-y',
+      '-f', 'lavfi',
+      '-i', `anullsrc=channel_layout=mono:sample_rate=44100`,
+      '-t', duration.toString(),
+      '-c:a', 'pcm_s16le',
+      outputPath
+    ]);
+    
+    let stderr = '';
+    proc.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Failed to generate silence: ${stderr.slice(-500)}`));
+      }
+    });
+    
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn ffmpeg for silence: ${err.message}`));
+    });
+  });
+}
+
+// Concatenate audio files using ffmpeg
+async function concatenateAudioFiles(inputFiles: string[], outputPath: string): Promise<void> {
+  const tempDir = path.dirname(outputPath);
+  const listFile = path.join(tempDir, `concat_list_${Date.now()}.txt`);
+  
+  // Create concat file list
+  const listContent = inputFiles.map(f => `file '${f}'`).join('\n');
+  await fs.writeFile(listFile, listContent, 'utf-8');
+  
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', [
+      '-y',
+      '-f', 'concat',
+      '-safe', '0',
+      '-i', listFile,
+      '-c:a', 'pcm_s16le',
+      '-ar', '44100',
+      outputPath
+    ]);
+    
+    let stderr = '';
+    proc.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on('close', async (code) => {
+      try {
+        await fs.unlink(listFile);
+      } catch (e) {}
+      
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Concatenation failed: ${stderr.slice(-500)}`));
+      }
+    });
+    
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn ffmpeg for concat: ${err.message}`));
+    });
+  });
+}
+
+interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+// Run ElevenLabs voice replacement with segment-by-segment synthesis and time-stretching
 async function runElevenLabsVoiceReplacement(
   inputVideoPath: string,
   outputVideoPath: string,
   elevenLabsVoiceId: string,
-  transcriptText: string
+  transcriptText: string,
+  transcriptSegments?: TranscriptSegment[]
 ): Promise<void> {
   await fs.mkdir(path.dirname(outputVideoPath), { recursive: true });
 
   console.log('[elevenlabs] Starting voice replacement with ElevenLabs');
   console.log('[elevenlabs] Voice ID:', elevenLabsVoiceId);
   console.log('[elevenlabs] Transcript length:', transcriptText.length, 'characters');
+  console.log('[elevenlabs] Segments available:', transcriptSegments?.length || 0);
 
-  // Get the original video duration first
-  let videoDuration: number;
-  try {
-    videoDuration = await getMediaDuration(inputVideoPath);
-    console.log('[elevenlabs] Original video duration:', videoDuration.toFixed(2), 'seconds');
-  } catch (err) {
-    console.warn('[elevenlabs] Could not get video duration, using default behavior');
-    videoDuration = 0;
-  }
-
-  // Synthesize audio using ElevenLabs
   const provider = new ElevenLabsProvider();
-  const result = await provider.synthesize({
-    text: transcriptText,
-    voiceRef: elevenLabsVoiceId,
-  });
-
-  // The synthesized audio is saved in the temp directory with the key as filename
   const tempDir = path.resolve(process.cwd(), 'temp');
-  const tempAudioPath = path.join(tempDir, result.key);
+  await fs.mkdir(tempDir, { recursive: true });
   
-  console.log('[elevenlabs] Audio synthesized:', tempAudioPath);
-  
-  // If we know the video duration, pad the audio to match it
-  let finalAudioPath = tempAudioPath;
-  const paddedAudioPath = path.join(tempDir, `padded_${result.key}`);
-  
-  if (videoDuration > 0) {
+  const videoDuration = await getMediaDuration(inputVideoPath);
+  console.log('[elevenlabs] Video duration:', videoDuration.toFixed(2), 'seconds');
+
+  // If we have segments with timing, do segment-by-segment synthesis with time-stretching
+  if (transcriptSegments && transcriptSegments.length > 0) {
+    console.log('[elevenlabs] Using segment-by-segment synthesis with time-stretching');
+    
+    const audioClips: string[] = [];
+    const cleanupFiles: string[] = [];
+    let currentTime = 0;
+    
     try {
-      await padAudioToMatchVideo(tempAudioPath, videoDuration, paddedAudioPath);
-      finalAudioPath = paddedAudioPath;
-    } catch (padErr) {
-      console.warn('[elevenlabs] Audio padding failed, using original audio:', padErr);
+      for (let i = 0; i < transcriptSegments.length; i++) {
+        const segment = transcriptSegments[i];
+        const segmentDuration = segment.end - segment.start;
+        const segmentText = segment.text.trim();
+        
+        if (!segmentText) continue;
+        
+        if (segmentDuration <= 0.05) {
+          console.warn(`[elevenlabs] Skipping segment ${i} with invalid duration: ${segmentDuration.toFixed(3)}s`);
+          continue;
+        }
+        
+        console.log(`[elevenlabs] Segment ${i + 1}/${transcriptSegments.length}: "${segmentText.slice(0, 50)}..." (${segment.start.toFixed(2)}s - ${segment.end.toFixed(2)}s)`);
+        
+        // Add silence gap if there's a gap between current position and segment start
+        if (segment.start > currentTime + 0.05) {
+          const gapDuration = segment.start - currentTime;
+          const gapFile = path.join(tempDir, `gap_${i}_${Date.now()}.wav`);
+          await generateSilence(gapDuration, gapFile);
+          audioClips.push(gapFile);
+          cleanupFiles.push(gapFile);
+          console.log(`[elevenlabs] Added ${gapDuration.toFixed(2)}s silence gap`);
+        }
+        
+        // Synthesize this segment
+        const result = await provider.synthesize({
+          text: segmentText,
+          voiceRef: elevenLabsVoiceId,
+        });
+        
+        const rawAudioPath = path.join(tempDir, result.key);
+        cleanupFiles.push(rawAudioPath);
+        
+        // Get the synthesized audio duration
+        const synthDuration = await getMediaDuration(rawAudioPath);
+        console.log(`[elevenlabs] Synthesized ${synthDuration.toFixed(2)}s, target ${segmentDuration.toFixed(2)}s`);
+        
+        // Time-stretch to match original segment duration
+        const stretchedPath = path.join(tempDir, `stretched_${i}_${Date.now()}.wav`);
+        await timeStretchAudio(rawAudioPath, segmentDuration, stretchedPath);
+        audioClips.push(stretchedPath);
+        cleanupFiles.push(stretchedPath);
+        
+        currentTime = segment.end;
+      }
+      
+      // Add silence at the end if video is longer than last segment
+      if (videoDuration > currentTime + 0.1) {
+        const endGap = videoDuration - currentTime;
+        const endGapFile = path.join(tempDir, `endgap_${Date.now()}.wav`);
+        await generateSilence(endGap, endGapFile);
+        audioClips.push(endGapFile);
+        cleanupFiles.push(endGapFile);
+        console.log(`[elevenlabs] Added ${endGap.toFixed(2)}s silence at end`);
+      }
+      
+      // Concatenate all audio clips
+      const finalAudioPath = path.join(tempDir, `final_${Date.now()}.wav`);
+      cleanupFiles.push(finalAudioPath);
+      
+      console.log(`[elevenlabs] Concatenating ${audioClips.length} audio clips`);
+      await concatenateAudioFiles(audioClips, finalAudioPath);
+      
+      // Mux with video
+      await muxAudioWithVideo(inputVideoPath, finalAudioPath, outputVideoPath);
+      
+      // Cleanup temp files
+      for (const file of cleanupFiles) {
+        try { await fs.unlink(file); } catch (e) {}
+      }
+      
+      console.log('[elevenlabs] Segment-by-segment voice replacement complete');
+      
+    } catch (err) {
+      // Cleanup on error
+      for (const file of cleanupFiles) {
+        try { await fs.unlink(file); } catch (e) {}
+      }
+      throw err;
+    }
+    
+  } else {
+    // Fallback: synthesize full text as one block (less accurate sync)
+    console.log('[elevenlabs] No segments available, using full-text synthesis (sync may vary)');
+    
+    const result = await provider.synthesize({
+      text: transcriptText,
+      voiceRef: elevenLabsVoiceId,
+    });
+    
+    const tempAudioPath = path.join(tempDir, result.key);
+    
+    // Pad audio to match video duration if needed
+    const audioDuration = await getMediaDuration(tempAudioPath);
+    let finalAudioPath = tempAudioPath;
+    
+    if (audioDuration < videoDuration) {
+      const paddedPath = path.join(tempDir, `padded_${Date.now()}.wav`);
+      await generateSilence(videoDuration - audioDuration, path.join(tempDir, 'pad_temp.wav'));
+      await concatenateAudioFiles([tempAudioPath, path.join(tempDir, 'pad_temp.wav')], paddedPath);
+      finalAudioPath = paddedPath;
+      try { await fs.unlink(path.join(tempDir, 'pad_temp.wav')); } catch (e) {}
+    }
+    
+    await muxAudioWithVideo(inputVideoPath, finalAudioPath, outputVideoPath);
+    
+    try { await fs.unlink(tempAudioPath); } catch (e) {}
+    if (finalAudioPath !== tempAudioPath) {
+      try { await fs.unlink(finalAudioPath); } catch (e) {}
     }
   }
-  
-  await new Promise<void>((resolve, reject) => {
-    // Do NOT use -shortest: we want the full video duration
-    // The audio is now padded to match the video length
+}
+
+// Mux audio with video (replace audio track)
+async function muxAudioWithVideo(
+  videoPath: string,
+  audioPath: string,
+  outputPath: string
+): Promise<void> {
+  return new Promise((resolve, reject) => {
     const ffmpegArgs = [
-      '-y',                     // Overwrite output
-      '-i', inputVideoPath,     // Input video
-      '-i', finalAudioPath,     // Input audio (padded if needed)
-      '-c:v', 'copy',           // Copy video stream
-      '-c:a', 'aac',            // Encode audio as AAC for compatibility
-      '-b:a', '192k',           // Audio bitrate
-      '-map', '0:v:0',          // Use video from first input
-      '-map', '1:a:0',          // Use audio from second input
-      outputVideoPath,
+      '-y',
+      '-i', videoPath,
+      '-i', audioPath,
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-map', '0:v:0',
+      '-map', '1:a:0',
+      outputPath,
     ];
 
-    console.log('[elevenlabs] Running ffmpeg:', 'ffmpeg', ffmpegArgs.join(' '));
+    console.log('[elevenlabs] Muxing audio with video');
 
     const proc = spawn('ffmpeg', ffmpegArgs);
     let stderr = '';
@@ -292,10 +483,10 @@ async function runElevenLabsVoiceReplacement(
 
     proc.on('close', (code) => {
       if (code === 0) {
-        console.log('[elevenlabs] Video processing complete:', outputVideoPath);
+        console.log('[elevenlabs] Video muxing complete:', outputPath);
         resolve();
       } else {
-        reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`));
+        reject(new Error(`ffmpeg mux failed with code ${code}: ${stderr.slice(-500)}`));
       }
     });
 
@@ -303,21 +494,6 @@ async function runElevenLabsVoiceReplacement(
       reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
     });
   });
-
-  // Clean up temp audio files
-  try {
-    await fs.unlink(tempAudioPath);
-  } catch (e) {
-    // Ignore cleanup errors
-  }
-  
-  if (finalAudioPath !== tempAudioPath) {
-    try {
-      await fs.unlink(paddedAudioPath);
-    } catch (e) {
-      // Ignore cleanup errors
-    }
-  }
 }
 
 // Run the Python voice replacement pipeline
@@ -972,8 +1148,9 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
           }
           console.log('[processing] Using ElevenLabs voice replacement');
           console.log('[processing] Transcript text length:', transcriptText.length, 'characters');
+          console.log('[processing] Transcript segments:', transcriptSegments.length);
           await setProjectProgress(id, 30, 'tts_synthesis');
-          await runElevenLabsVoiceReplacement(inputVideoPath, outputVideoPath, providerRef, transcriptText);
+          await runElevenLabsVoiceReplacement(inputVideoPath, outputVideoPath, providerRef, transcriptText, transcriptSegments);
         } else {
           // Use Python pipeline for local voice cloning (F5/RVC)
           // For non-ElevenLabs, we still need a transcript for the pipeline
