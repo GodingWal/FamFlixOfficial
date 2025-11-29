@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { Navigation } from "@/components/Navigation";
-import AdBanner from "@/components/AdBanner";
 import { VideoCard } from "@/components/VideoCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -112,11 +111,6 @@ export default function VideoLibrary() {
               <p className="text-muted-foreground">Manage and organize your family videos</p>
             </div>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:gap-6 w-full lg:w-auto">
-              {user?.plan === 'free' && (
-                <div className="w-full lg:w-80">
-                  <AdBanner placementId="video-library-header" layout="sidebar" />
-                </div>
-              )}
               <Link href="/create" className="lg:self-end">
                 <Button className="bg-primary hover:bg-primary/90 text-primary-foreground" data-testid="button-new-video">
                   <i className="fas fa-plus mr-2"></i>

@@ -31,7 +31,6 @@ import {
   subscriptionPlans,
   type SubscriptionPlan,
   type User,
-  type InsertAdPreference,
 } from "@shared/schema-sqlite";
 import { billingService } from "./services/billingService";
 import { ensureTemplateVideosTable } from "./utils/templateVideos";
@@ -95,19 +94,6 @@ const checkoutSchema = z.object({
   }),
 });
 
-// Ads preferences
-const DEFAULT_AD_DAILY_CAP = 5;
-const adPreferenceQuerySchema = z.object({
-  placementId: z.string().min(1, "placementId is required"),
-});
-
-const adPreferenceUpdateSchema = z.object({
-  placementId: z.string().min(1, "placementId is required"),
-  optOut: z.boolean().optional(),
-  incrementImpression: z.boolean().optional(),
-  dailyCap: z.number().int().min(1).max(50).optional(),
-});
-
 const serializeUser = (user: User) => ({
   id: user.id,
   email: user.email,
@@ -124,35 +110,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   await ensureTemplateVideosTable();
   // Apply general rate limiting to all routes
   app.use('/api', generalRateLimit);
-
-  const parsePlacementId = (value: unknown) => {
-    if (Array.isArray(value)) {
-      return typeof value[0] === 'string' ? value[0] : undefined;
-    }
-
-    return typeof value === 'string' ? value : undefined;
-  };
-
-  const isSameDay = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
-
-  const ensureAdPreferenceWindow = async (userId: string, placementId: string) => {
-    const preference = await storage.getAdPreference(userId, placementId);
-
-    if (preference?.lastImpressionAt) {
-      const lastImpression = new Date(preference.lastImpressionAt);
-      if (!isSameDay(new Date(), lastImpression)) {
-        return storage.upsertAdPreference(userId, placementId, {
-          dailyImpressions: 0,
-          lastImpressionAt: null,
-        });
-      }
-    }
-
-    return preference ?? undefined;
-  };
 
   // Health check
   app.get('/api/health', (req, res) => {
@@ -559,105 +516,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Get user error:', error);
       res.status(500).json({ error: "Failed to get user data" });
-    }
-  });
-
-  app.get('/api/ads/preferences', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const placementIdValue = parsePlacementId(req.query.placementId);
-      const { placementId } = adPreferenceQuerySchema.parse({
-        placementId: placementIdValue ?? "",
-      });
-
-      const preference = await ensureAdPreferenceWindow(req.user!.id, placementId);
-      const dailyCap = preference?.dailyCap ?? DEFAULT_AD_DAILY_CAP;
-      const dailyImpressions = preference?.dailyImpressions ?? 0;
-      const lastImpressionAt = preference?.lastImpressionAt
-        ? new Date(preference.lastImpressionAt).toISOString()
-        : null;
-
-      res.json({
-        placementId,
-        optOut: preference?.optOut ?? false,
-        dailyCap,
-        dailyImpressions,
-        lastImpressionAt,
-        frequencyCapReached: dailyImpressions >= dailyCap,
-      });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ error: error.issues[0]?.message ?? 'Invalid ad preference request' });
-      }
-
-      console.error('Failed to load ad preferences:', error);
-      res.status(500).json({ error: 'Unable to load ad preferences' });
-    }
-  });
-
-  app.post('/api/ads/preferences', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const { placementId, optOut, incrementImpression = false, dailyCap } = adPreferenceUpdateSchema.parse(req.body);
-      const userId = req.user!.id;
-
-      let preference = await ensureAdPreferenceWindow(userId, placementId);
-      const effectiveDailyCap = dailyCap ?? preference?.dailyCap ?? DEFAULT_AD_DAILY_CAP;
-
-      const updates: Partial<Omit<InsertAdPreference, "userId" | "placementId">> = {};
-
-      if (optOut !== undefined) {
-        updates.optOut = optOut;
-      }
-
-      if (dailyCap !== undefined) {
-        updates.dailyCap = dailyCap;
-      }
-
-      if (incrementImpression) {
-        const impressions = preference?.dailyImpressions ?? 0;
-        if (impressions >= effectiveDailyCap) {
-          return res.status(200).json({
-            placementId,
-            optOut: preference?.optOut ?? false,
-            dailyCap: effectiveDailyCap,
-            dailyImpressions: impressions,
-            lastImpressionAt: preference?.lastImpressionAt
-              ? new Date(preference.lastImpressionAt).toISOString()
-              : null,
-            frequencyCapReached: true,
-          });
-        }
-
-        updates.dailyImpressions = impressions + 1;
-        updates.lastImpressionAt = new Date();
-      }
-
-      if (Object.keys(updates).length === 0) {
-        preference = preference ?? await storage.upsertAdPreference(userId, placementId, {});
-      } else {
-        preference = await storage.upsertAdPreference(userId, placementId, updates);
-      }
-
-      const appliedDailyCap = preference?.dailyCap ?? effectiveDailyCap;
-      const dailyImpressions = preference?.dailyImpressions ?? 0;
-      const lastImpressionAt = preference?.lastImpressionAt
-        ? new Date(preference.lastImpressionAt).toISOString()
-        : null;
-
-      res.json({
-        placementId,
-        optOut: preference?.optOut ?? false,
-        dailyCap: appliedDailyCap,
-        dailyImpressions,
-        lastImpressionAt,
-        frequencyCapReached: dailyImpressions >= appliedDailyCap,
-      });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ error: error.issues[0]?.message ?? 'Invalid ad preference request' });
-      }
-
-      console.error('Failed to update ad preferences:', error);
-      res.status(500).json({ error: 'Unable to update ad preferences' });
     }
   });
 

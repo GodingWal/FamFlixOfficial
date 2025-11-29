@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Navigation } from "@/components/Navigation";
-import AdBanner from "@/components/AdBanner";
 import { VideoCard } from "@/components/VideoCard";
 import { QuickActionCard } from "@/components/QuickActionCard";
 import { CollaboratorCard } from "@/components/CollaboratorCard";
@@ -114,11 +113,6 @@ export default function Dashboard() {
               <p className="text-muted-foreground">Recent videos and ongoing projects</p>
             </div>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:gap-6 w-full lg:w-auto">
-              {user?.plan === 'free' && (
-                <div className="w-full lg:w-80">
-                  <AdBanner placementId="dashboard-library" layout="sidebar" />
-                </div>
-              )}
               <Link href="/create" className="lg:self-end">
                 <Button className="bg-primary hover:bg-primary/90 text-primary-foreground" data-testid="button-new-project">
                   <i className="fas fa-plus mr-2"></i>

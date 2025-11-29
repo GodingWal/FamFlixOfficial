@@ -2,7 +2,6 @@ import { useState, useMemo, useEffect, type ComponentType } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Navigation } from "@/components/Navigation";
-import AdBanner from "@/components/AdBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -267,16 +266,11 @@ export default function VideoSelectionCatalog() {
               </div>
             </div>
 
-            {/* Results Count & Ad */}
+            {/* Results Count */}
             <div className="mt-2 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between w-full">
               <div className="text-sm text-muted-foreground">
                 {filteredVideos.length} {filteredVideos.length === 1 ? 'video' : 'videos'} found
               </div>
-              {user?.plan === 'free' && (
-                <div className="lg:w-72">
-                  <AdBanner placementId="template-catalog-header" layout="sidebar" />
-                </div>
-              )}
             </div>
           </div>
         </div>

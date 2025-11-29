@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Navigation } from "@/components/Navigation";
-import AdBanner from "@/components/AdBanner";
 import {
   Card,
   CardContent,
@@ -676,9 +675,6 @@ export default function Stories() {
                   </p>
                 )}
               </div>
-              {user?.plan === 'free' && (
-                <AdBanner placementId="stories-sidebar" layout="sidebar" />
-              )}
             </div>
           </CardHeader>
           <CardContent>

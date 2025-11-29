@@ -274,7 +274,8 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
 
   const jobId = `${story.id}:${voiceId}`;
 
-  if (force) {
+  // If storyQueue is available (Redis configured), handle force removal
+  if (storyQueue && force) {
     const existingJob = await storyQueue.getJob(jobId);
     if (existingJob) {
       await existingJob.remove();
@@ -297,8 +298,8 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
     }
   }
 
-  // If Redis is not configured, run a synchronous fallback and return ready sections immediately
-  if (!config.REDIS_URL) {
+  // If storyQueue is not available (no Redis), run synchronous fallback
+  if (!storyQueue) {
     const defaultProviderKey = voice.provider ?? config.TTS_PROVIDER;
 
     for (const section of sections) {
@@ -370,7 +371,7 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
     });
   }
 
-  // Normal path: enqueue and return job payload
+  // Normal path: enqueue and return job payload (storyQueue is available at this point)
   try {
     await enqueueStorySynthesis({ storyId: story.id, voiceId, force: Boolean(force) });
   } catch (error: any) {
@@ -379,7 +380,7 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
     }
   }
 
-  const job = await storyQueue.getJob(jobId);
+  const job = await storyQueue!.getJob(jobId);
   const state = job ? await job.getState() : "queued";
   const progress = job?.progress ?? 0;
 
@@ -435,6 +436,10 @@ router.get("/api/stories/:slug/audio", authenticateToken, ensureStoryModeEnabled
 });
 
 router.get("/api/jobs/:jobId", authenticateToken, ensureStoryModeEnabled, async (req: AuthRequest, res) => {
+  if (!storyQueue) {
+    return res.status(503).json({ error: "Job queue is not available. Redis is not configured." });
+  }
+  
   const job = await storyQueue.getJob(req.params.jobId);
   if (!job) {
     return res.status(404).json({ error: "Job not found" });
