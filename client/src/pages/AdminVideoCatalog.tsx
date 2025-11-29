@@ -29,6 +29,7 @@ interface TemplateVideo {
   metadata?: {
     pipelineStatus?: string;
     sourceVideoId?: string;
+    transcript?: string;
   };
 }
 
@@ -40,7 +41,8 @@ export default function AdminVideoCatalog() {
   const { toast } = useToast();
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [formState, setFormState] = useState<Partial<TemplateVideo> & { tagsInput?: string }>({});
+  const [formState, setFormState] = useState<Partial<TemplateVideo> & { tagsInput?: string; transcriptInput?: string }>({});
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
   const { data, isLoading } = useQuery<TemplateVideo[]>({
     queryKey: ["/api/template-videos", "admin"],
@@ -65,6 +67,7 @@ export default function AdminVideoCatalog() {
     setFormState({
       ...selectedVideo,
       tagsInput: selectedVideo.tags.join(", "),
+      transcriptInput: selectedVideo.metadata?.transcript || "",
     });
   }, [selectedVideo]);
 
@@ -79,6 +82,7 @@ export default function AdminVideoCatalog() {
         duration: formState.duration,
         tags: formState.tagsInput?.split(",").map((tag) => tag.trim()).filter(Boolean) ?? [],
         isActive: formState.isActive,
+        transcript: formState.transcriptInput || null,
       };
       const response = await apiRequest("PATCH", `/api/template-videos/${selectedVideo.id}`, payload);
       if (!response.ok) {
@@ -315,6 +319,53 @@ export default function AdminVideoCatalog() {
                       value={formState.tagsInput ?? ""}
                       onChange={(event) => setFormState((state) => ({ ...state, tagsInput: event.target.value }))}
                     />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label>Transcript</Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={isTranscribing}
+                        onClick={async () => {
+                          if (!selectedVideo) return;
+                          setIsTranscribing(true);
+                          try {
+                            const response = await apiRequest("POST", `/api/template-videos/${selectedVideo.id}/transcribe`);
+                            if (!response.ok) {
+                              const error = await response.json().catch(() => ({}));
+                              throw new Error(error.error || "Failed to generate transcript");
+                            }
+                            const data = await response.json();
+                            setFormState((state) => ({ ...state, transcriptInput: data.transcript || "" }));
+                            toast({ title: "Transcript generated", description: "Review and save to confirm." });
+                            queryClient.invalidateQueries({ queryKey: ["/api/template-videos", "admin"] });
+                          } catch (error: any) {
+                            toast({
+                              title: "Transcription failed",
+                              description: error?.message || "Unable to generate transcript.",
+                              variant: "destructive",
+                            });
+                          } finally {
+                            setIsTranscribing(false);
+                          }
+                        }}
+                      >
+                        {isTranscribing ? "Generating..." : "Generate with AI"}
+                      </Button>
+                    </div>
+                    <Textarea
+                      value={formState.transcriptInput ?? ""}
+                      onChange={(event) => setFormState((state) => ({ ...state, transcriptInput: event.target.value }))}
+                      rows={6}
+                      placeholder="No transcript available. Click 'Generate with AI' to transcribe the video audio, or enter manually."
+                      className="font-mono text-sm"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      This transcript will be used when processing videos with voice cloning.
+                    </p>
                   </div>
 
                   <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-3">

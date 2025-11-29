@@ -8,6 +8,7 @@ import { authenticateToken, AuthRequest } from '../middleware/auth-simple.js';
 import { storage } from '../storage';
 import { adminVideoPipelineService } from '../services/adminVideoPipelineService';
 import { ensureTemplateVideosTable } from '../utils/templateVideos';
+import { transcriptionService } from '../services/transcriptionService';
 
 const router = Router();
 const isSQLite = process.env.DATABASE_URL?.startsWith('file:');
@@ -345,7 +346,7 @@ router.patch('/api/template-videos/:id', authenticateToken, async (req: AuthRequ
       return res.status(404).json({ error: 'Template video not found' });
     }
 
-    const { title, description, category, difficulty, duration, tags, isActive } = req.body ?? {};
+    const { title, description, category, difficulty, duration, tags, isActive, transcript } = req.body ?? {};
     const assignments: any[] = [];
 
     if (title !== undefined) {
@@ -364,6 +365,15 @@ router.patch('/api/template-videos/:id', authenticateToken, async (req: AuthRequ
       const durationValueRaw = duration === null || duration === '' ? null : Number(duration);
       const durationValue = durationValueRaw === null || Number.isFinite(durationValueRaw) ? durationValueRaw : null;
       assignments.push(sql`duration = ${durationValue}`);
+    }
+    if (transcript !== undefined) {
+      const existingMeta = parseMetadata(video.metadata);
+      const updatedMeta = { ...existingMeta, transcript: transcript || null };
+      if (isSQLite) {
+        assignments.push(sql`metadata = ${JSON.stringify(updatedMeta)}`);
+      } else {
+        assignments.push(sql`metadata = ${JSON.stringify(updatedMeta)}::jsonb`);
+      }
     }
     if (tags !== undefined) {
       let tagsValue: string;
@@ -417,6 +427,68 @@ router.patch('/api/template-videos/:id', authenticateToken, async (req: AuthRequ
   } catch (error) {
     console.error('Update template video error:', error);
     res.status(500).json({ error: 'Failed to update template video' });
+  }
+});
+
+router.post('/api/template-videos/:id/transcribe', authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
+    }
+
+    await ensureTemplateVideosTable();
+    const { id } = req.params;
+    const template = await dbQueryOne(sql`SELECT * FROM template_videos WHERE id = ${id}`);
+    if (!template) {
+      return res.status(404).json({ error: 'Template video not found' });
+    }
+
+    if (!transcriptionService.isConfigured()) {
+      return res.status(503).json({ error: 'Transcription service is not configured' });
+    }
+
+    const videoUrl = template.video_url;
+    if (!videoUrl) {
+      return res.status(400).json({ error: 'Template video has no video file' });
+    }
+
+    const videoPath = path.join(process.cwd(), videoUrl.replace(/^\/+/, ''));
+    
+    try {
+      await fs.access(videoPath);
+    } catch {
+      return res.status(404).json({ error: 'Video file not found on disk' });
+    }
+
+    console.log(`[templateVideos] Starting transcription for template ${id}: ${videoPath}`);
+    const result = await transcriptionService.transcribeVideo(videoPath);
+    
+    const existingMeta = parseMetadata(template.metadata);
+    const updatedMeta = { ...existingMeta, transcript: result.fullText };
+    
+    if (isSQLite) {
+      await dbRun(sql`
+        UPDATE template_videos
+        SET metadata = ${JSON.stringify(updatedMeta)}, updated_at = ${new Date().toISOString()}
+        WHERE id = ${id}
+      `);
+    } else {
+      await dbRun(sql`
+        UPDATE template_videos
+        SET metadata = ${JSON.stringify(updatedMeta)}::jsonb, updated_at = ${new Date().toISOString()}::timestamp
+        WHERE id = ${id}
+      `);
+    }
+
+    console.log(`[templateVideos] Transcription complete for template ${id}: ${result.fullText.length} characters`);
+    res.json({ 
+      transcript: result.fullText,
+      duration: result.duration,
+      segments: result.segments.length
+    });
+  } catch (error) {
+    console.error('Transcribe template video error:', error);
+    res.status(500).json({ error: 'Failed to transcribe video' });
   }
 });
 
