@@ -126,6 +126,97 @@ async function persistProjectTranscript(projectId: string | number, segments: an
   return transcriptPath;
 }
 
+// Get video duration using ffprobe
+async function getMediaDuration(filePath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      filePath
+    ]);
+    
+    let stdout = '';
+    let stderr = '';
+    
+    proc.stdout?.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    proc.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        const duration = parseFloat(stdout.trim());
+        if (!isNaN(duration)) {
+          resolve(duration);
+        } else {
+          reject(new Error('Could not parse duration from ffprobe output'));
+        }
+      } else {
+        reject(new Error(`ffprobe failed: ${stderr}`));
+      }
+    });
+    
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn ffprobe: ${err.message}`));
+    });
+  });
+}
+
+// Pad audio to match a target duration by adding silence at the end
+async function padAudioToMatchVideo(
+  audioPath: string, 
+  targetDuration: number, 
+  outputPath: string
+): Promise<void> {
+  const audioDuration = await getMediaDuration(audioPath);
+  
+  console.log(`[elevenlabs] Audio duration: ${audioDuration.toFixed(2)}s, Video duration: ${targetDuration.toFixed(2)}s`);
+  
+  if (audioDuration >= targetDuration) {
+    // Audio is long enough, just copy it
+    await fs.copyFile(audioPath, outputPath);
+    console.log('[elevenlabs] Audio is longer than or equal to video, no padding needed');
+    return;
+  }
+  
+  // Need to pad with silence
+  const paddingNeeded = targetDuration - audioDuration;
+  console.log(`[elevenlabs] Padding audio with ${paddingNeeded.toFixed(2)}s of silence`);
+  
+  return new Promise((resolve, reject) => {
+    // Use ffmpeg to add silence padding at the end
+    const proc = spawn('ffmpeg', [
+      '-y',
+      '-i', audioPath,
+      '-af', `apad=whole_dur=${targetDuration}`,
+      '-c:a', 'libmp3lame',  // Re-encode to ensure proper padding
+      '-q:a', '2',
+      outputPath
+    ]);
+    
+    let stderr = '';
+    proc.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Failed to pad audio: ${stderr.slice(-500)}`));
+      }
+    });
+    
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn ffmpeg for padding: ${err.message}`));
+    });
+  });
+}
+
 // Run ElevenLabs voice replacement - synthesizes audio and replaces it in video
 async function runElevenLabsVoiceReplacement(
   inputVideoPath: string,
@@ -138,6 +229,16 @@ async function runElevenLabsVoiceReplacement(
   console.log('[elevenlabs] Starting voice replacement with ElevenLabs');
   console.log('[elevenlabs] Voice ID:', elevenLabsVoiceId);
   console.log('[elevenlabs] Transcript length:', transcriptText.length, 'characters');
+
+  // Get the original video duration first
+  let videoDuration: number;
+  try {
+    videoDuration = await getMediaDuration(inputVideoPath);
+    console.log('[elevenlabs] Original video duration:', videoDuration.toFixed(2), 'seconds');
+  } catch (err) {
+    console.warn('[elevenlabs] Could not get video duration, using default behavior');
+    videoDuration = 0;
+  }
 
   // Synthesize audio using ElevenLabs
   const provider = new ElevenLabsProvider();
@@ -152,15 +253,31 @@ async function runElevenLabsVoiceReplacement(
   
   console.log('[elevenlabs] Audio synthesized:', tempAudioPath);
   
+  // If we know the video duration, pad the audio to match it
+  let finalAudioPath = tempAudioPath;
+  const paddedAudioPath = path.join(tempDir, `padded_${result.key}`);
+  
+  if (videoDuration > 0) {
+    try {
+      await padAudioToMatchVideo(tempAudioPath, videoDuration, paddedAudioPath);
+      finalAudioPath = paddedAudioPath;
+    } catch (padErr) {
+      console.warn('[elevenlabs] Audio padding failed, using original audio:', padErr);
+    }
+  }
+  
   await new Promise<void>((resolve, reject) => {
+    // Do NOT use -shortest: we want the full video duration
+    // The audio is now padded to match the video length
     const ffmpegArgs = [
       '-y',                     // Overwrite output
       '-i', inputVideoPath,     // Input video
-      '-i', tempAudioPath,      // Input audio from ElevenLabs
+      '-i', finalAudioPath,     // Input audio (padded if needed)
       '-c:v', 'copy',           // Copy video stream
+      '-c:a', 'aac',            // Encode audio as AAC for compatibility
+      '-b:a', '192k',           // Audio bitrate
       '-map', '0:v:0',          // Use video from first input
       '-map', '1:a:0',          // Use audio from second input
-      '-shortest',              // End when shortest stream ends
       outputVideoPath,
     ];
 
@@ -187,11 +304,19 @@ async function runElevenLabsVoiceReplacement(
     });
   });
 
-  // Clean up temp audio file
+  // Clean up temp audio files
   try {
     await fs.unlink(tempAudioPath);
   } catch (e) {
     // Ignore cleanup errors
+  }
+  
+  if (finalAudioPath !== tempAudioPath) {
+    try {
+      await fs.unlink(paddedAudioPath);
+    } catch (e) {
+      // Ignore cleanup errors
+    }
   }
 }
 

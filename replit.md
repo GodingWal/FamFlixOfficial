@@ -114,6 +114,21 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
+### 2025-11-29: Video Processing Cutoff Fix
+- Fixed video being cut off at the end when synthesized audio is shorter than original video
+- Removed `-shortest` ffmpeg flag that was causing premature video termination
+- Added `getMediaDuration()` helper to get video/audio duration using ffprobe
+- Added `padAudioToMatchVideo()` to pad synthesized audio with silence to match video length
+- Audio now properly encoded as AAC for better compatibility
+- Note: Sync timing may still differ from original since TTS synthesizes as one block (not segment-by-segment)
+
+### 2025-11-29: Admin Transcript Management
+- Added transcript viewing and editing in Admin Video Catalog (`/admin/videos`)
+- Transcripts are stored in template video metadata and used during voice cloning
+- Added "Generate with AI" button to auto-transcribe videos using Gemini AI
+- New API endpoint: `POST /api/template-videos/:id/transcribe` for on-demand transcription
+- PATCH endpoint now supports `transcript` field for saving edited transcripts
+
 ### 2025-11-29: Advertising Code Removal
 - Completely removed AdBanner component and all ad-related code
 - Removed `/api/ads/preferences` endpoints and schemas from backend
