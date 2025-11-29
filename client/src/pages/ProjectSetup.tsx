@@ -18,8 +18,11 @@ import {
   Loader2,
   Play,
   ArrowRight,
-  AlertTriangle
+  AlertTriangle,
+  Music
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 
 // Feature flags
 const FACE_FEATURE_ENABLED = false;
@@ -53,6 +56,7 @@ export default function ProjectSetup() {
   const [faceImage, setFaceImage] = useState<File | null>(null);
   const [faceImagePreview, setFaceImagePreview] = useState<string | null>(null);
   const [uploadingFace, setUploadingFace] = useState(false);
+  const [preserveBackground, setPreserveBackground] = useState(true);
 
   // Fetch project details
   const { data: project, isLoading: projectLoading } = useQuery<VideoProject>({
@@ -78,7 +82,10 @@ export default function ProjectSetup() {
 
   const startProcessingMutation = useMutation({
     mutationFn: async () => {
-      const response = await apiRequest("POST", `/api/video-projects/${projectId}/process`, {});
+      const response = await apiRequest("POST", `/api/video-projects/${projectId}/process`, {
+        preserveBackground,
+        backgroundDuckLevel: -12
+      });
       return response.json();
     },
     onSuccess: () => {
@@ -353,6 +360,34 @@ export default function ProjectSetup() {
               </Card>
             )}
           </div>
+
+          {/* Audio Options */}
+          <Card className="mb-8">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Music className="h-5 w-5" />
+                Audio Options
+              </CardTitle>
+              <CardDescription>Configure how the audio is processed</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between rounded-lg border p-4">
+                <div className="space-y-0.5">
+                  <Label htmlFor="preserve-background" className="text-base">
+                    Preserve Background Audio
+                  </Label>
+                  <p className="text-sm text-muted-foreground">
+                    Keep background music and sounds, only replace the voice
+                  </p>
+                </div>
+                <Switch
+                  id="preserve-background"
+                  checked={preserveBackground}
+                  onCheckedChange={setPreserveBackground}
+                />
+              </div>
+            </CardContent>
+          </Card>
 
           {/* Action Buttons */}
           <div className="flex justify-between">

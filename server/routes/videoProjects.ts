@@ -309,20 +309,130 @@ interface TranscriptSegment {
   text: string;
 }
 
+// Extract audio from video file
+async function extractAudioFromVideo(videoPath: string, outputPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', [
+      '-y',
+      '-i', videoPath,
+      '-vn',
+      '-acodec', 'pcm_s16le',
+      '-ar', '44100',
+      '-ac', '2',
+      outputPath
+    ]);
+    
+    let stderr = '';
+    proc.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Audio extraction failed: ${stderr.slice(-500)}`));
+      }
+    });
+    
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn ffmpeg for audio extraction: ${err.message}`));
+    });
+  });
+}
+
+// Mix new voice with original audio using ducking (lowers original during speech)
+async function mixVoiceWithBackground(
+  originalAudioPath: string,
+  newVoicePath: string, 
+  outputPath: string,
+  segments: TranscriptSegment[],
+  duckLevel: number = -12 // dB reduction during speech
+): Promise<void> {
+  // Convert dB to linear (e.g., -12dB = 0.25)
+  const duckLinear = Math.pow(10, duckLevel / 20);
+  
+  // Build complex filter for ducking and mixing
+  // [0] = original audio, [1] = new voice
+  // Duck original during speech segments, then mix with new voice
+  
+  let volumeFilter: string;
+  if (segments.length > 0) {
+    // Build OR chain of between() conditions: gte(between(t,s1,e1)+between(t,s2,e2)+...,1)
+    // This evaluates to 1 (true) when t is within any segment
+    const betweenConditions = segments.map(seg => 
+      `between(t\\,${seg.start.toFixed(3)}\\,${seg.end.toFixed(3)})`
+    ).join('+');
+    // Use gte(...,1) to convert the sum to a boolean (1 if any segment matches)
+    // Then use if() to apply duck level during speech, full volume otherwise
+    volumeFilter = `[0:a]volume='if(gte(${betweenConditions}\\,1)\\,${duckLinear.toFixed(4)}\\,1)':eval=frame[ducked]`;
+  } else {
+    // No segments, just lower the entire original audio
+    volumeFilter = `[0:a]volume=${duckLinear.toFixed(4)}[ducked]`;
+  }
+  
+  // Mix ducked original with new voice (comma separates filters)
+  const filterComplex = `${volumeFilter};[ducked][1:a]amix=inputs=2:duration=longest:dropout_transition=0:weights=1 1[out]`;
+  
+  console.log('[mixing] Filter complex:', filterComplex.slice(0, 200) + '...');
+  
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', [
+      '-y',
+      '-i', originalAudioPath,
+      '-i', newVoicePath,
+      '-filter_complex', filterComplex,
+      '-map', '[out]',
+      '-acodec', 'pcm_s16le',
+      '-ar', '44100',
+      outputPath
+    ]);
+    
+    let stderr = '';
+    proc.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        console.log('[mixing] Audio mixing complete');
+        resolve();
+      } else {
+        console.error('[mixing] ffmpeg stderr:', stderr.slice(-1000));
+        reject(new Error(`Audio mixing failed: ${stderr.slice(-500)}`));
+      }
+    });
+    
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn ffmpeg for mixing: ${err.message}`));
+    });
+  });
+}
+
+interface VoiceReplacementOptions {
+  preserveBackground?: boolean;  // Keep background audio/music
+  backgroundDuckLevel?: number;  // dB reduction during speech (-12 default)
+}
+
 // Run ElevenLabs voice replacement with segment-by-segment synthesis and time-stretching
 async function runElevenLabsVoiceReplacement(
   inputVideoPath: string,
   outputVideoPath: string,
   elevenLabsVoiceId: string,
   transcriptText: string,
-  transcriptSegments?: TranscriptSegment[]
+  transcriptSegments?: TranscriptSegment[],
+  options?: VoiceReplacementOptions
 ): Promise<void> {
   await fs.mkdir(path.dirname(outputVideoPath), { recursive: true });
+
+  const preserveBackground = options?.preserveBackground ?? false;
+  const duckLevel = options?.backgroundDuckLevel ?? -12;
 
   console.log('[elevenlabs] Starting voice replacement with ElevenLabs');
   console.log('[elevenlabs] Voice ID:', elevenLabsVoiceId);
   console.log('[elevenlabs] Transcript length:', transcriptText.length, 'characters');
   console.log('[elevenlabs] Segments available:', transcriptSegments?.length || 0);
+  console.log('[elevenlabs] Preserve background:', preserveBackground);
 
   const provider = new ElevenLabsProvider();
   const tempDir = path.resolve(process.cwd(), 'temp');
@@ -396,12 +506,31 @@ async function runElevenLabsVoiceReplacement(
         console.log(`[elevenlabs] Added ${endGap.toFixed(2)}s silence at end`);
       }
       
-      // Concatenate all audio clips
-      const finalAudioPath = path.join(tempDir, `final_${Date.now()}.wav`);
-      cleanupFiles.push(finalAudioPath);
+      // Concatenate all audio clips (new voice)
+      const newVoicePath = path.join(tempDir, `newvoice_${Date.now()}.wav`);
+      cleanupFiles.push(newVoicePath);
       
       console.log(`[elevenlabs] Concatenating ${audioClips.length} audio clips`);
-      await concatenateAudioFiles(audioClips, finalAudioPath);
+      await concatenateAudioFiles(audioClips, newVoicePath);
+      
+      let finalAudioPath = newVoicePath;
+      
+      if (preserveBackground && transcriptSegments && transcriptSegments.length > 0) {
+        console.log('[elevenlabs] Preserving background audio with ducking');
+        
+        // Extract original audio
+        const originalAudioPath = path.join(tempDir, `original_${Date.now()}.wav`);
+        cleanupFiles.push(originalAudioPath);
+        await extractAudioFromVideo(inputVideoPath, originalAudioPath);
+        
+        // Mix new voice with ducked original (preserves background)
+        const mixedAudioPath = path.join(tempDir, `mixed_${Date.now()}.wav`);
+        cleanupFiles.push(mixedAudioPath);
+        await mixVoiceWithBackground(originalAudioPath, newVoicePath, mixedAudioPath, transcriptSegments, duckLevel);
+        
+        finalAudioPath = mixedAudioPath;
+        console.log('[elevenlabs] Background preserved with ducking during speech');
+      }
       
       // Mux with video
       await muxAudioWithVideo(inputVideoPath, finalAudioPath, outputVideoPath);
@@ -982,6 +1111,9 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
   try {
     const { id } = req.params;
     const userId = req.user!.id;
+    
+    // Extract processing options from request body
+    const { preserveBackground = false, backgroundDuckLevel = -12 } = req.body || {};
 
     const project = await dbQueryOne(sql`
       SELECT * FROM video_projects WHERE id = ${id} AND user_id = ${userId}
@@ -1149,8 +1281,12 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
           console.log('[processing] Using ElevenLabs voice replacement');
           console.log('[processing] Transcript text length:', transcriptText.length, 'characters');
           console.log('[processing] Transcript segments:', transcriptSegments.length);
+          console.log('[processing] Preserve background audio:', preserveBackground);
           await setProjectProgress(id, 30, 'tts_synthesis');
-          await runElevenLabsVoiceReplacement(inputVideoPath, outputVideoPath, providerRef, transcriptText, transcriptSegments);
+          await runElevenLabsVoiceReplacement(inputVideoPath, outputVideoPath, providerRef, transcriptText, transcriptSegments, {
+            preserveBackground,
+            backgroundDuckLevel
+          });
         } else {
           // Use Python pipeline for local voice cloning (F5/RVC)
           // For non-ElevenLabs, we still need a transcript for the pipeline

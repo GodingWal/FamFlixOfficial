@@ -114,6 +114,15 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
+### 2025-11-29: Background Audio Preservation
+- Added `preserveBackground` option to video processing pipeline
+- When enabled, original audio is ducked (reduced volume) during speech segments
+- New synthesized voice is mixed with the ducked original audio
+- Background music and ambient sounds are preserved while replacing only the voice
+- Uses ffmpeg volume filter with dynamic ducking (-12dB during speech)
+- Frontend toggle in Project Setup page (default: enabled)
+- API accepts `preserveBackground` and `backgroundDuckLevel` parameters
+
 ### 2025-11-29: Transcript Editing
 - Added PATCH `/api/template-videos/:id/transcript` endpoint for admin editing
 - Robust validation: non-empty segments, finite numbers, min 0.05s duration, no overlaps, non-empty text
