@@ -10,6 +10,25 @@ import { InsertVideo } from "../db/schema";
 import { db } from "../db.js";
 import { sql } from "drizzle-orm";
 
+const isSQLite = process.env.DATABASE_URL?.startsWith('file:') ?? false;
+
+async function dbQueryOne(query: ReturnType<typeof sql>): Promise<any | null> {
+  if (isSQLite) {
+    return await (db as any).get(query);
+  } else {
+    const result = await db.execute(query);
+    return (result as any).rows?.[0] || null;
+  }
+}
+
+async function dbRun(query: ReturnType<typeof sql>): Promise<any> {
+  if (isSQLite) {
+    return await (db as any).run(query);
+  } else {
+    return await db.execute(query);
+  }
+}
+
 type PipelineStatus = "queued" | "processing" | "completed" | "error";
 
 interface PipelineJob {
@@ -100,6 +119,27 @@ export class AdminVideoPipelineService {
     }, "processing");
 
     try {
+      const pipelineAvailable = await this.checkPipelineAvailable();
+      
+      if (!pipelineAvailable) {
+        job.status = "completed";
+        job.completedAt = new Date();
+
+        await this.updateVideoPipelineState(job.videoId, {
+          status: "completed",
+          completedAt: job.completedAt.toISOString(),
+          note: "Video uploaded successfully. Transcription/diarization processing unavailable in this environment.",
+          diarization: null,
+          transcription: null,
+        }, "completed");
+
+        logger.info("[admin-pipeline] job completed (pipeline unavailable, skipping processing)", {
+          jobId: job.id,
+          videoId: job.videoId,
+        });
+        return;
+      }
+
       const resultPath = path.join(this.pipelineResultsDir, `${job.id}.json`);
       await this.executePythonPipeline(job, resultPath);
 
@@ -141,6 +181,16 @@ export class AdminVideoPipelineService {
         videoId: job.videoId,
         error: job.error,
       });
+    }
+  }
+
+  private async checkPipelineAvailable(): Promise<boolean> {
+    try {
+      const cliPath = path.join(this.pipelineCwd, "pipeline", "cli.py");
+      await fs.access(cliPath);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -211,8 +261,8 @@ export class AdminVideoPipelineService {
     if (process.env.ADMIN_PIPELINE_PYTHON_BIN) {
       candidates.push(process.env.ADMIN_PIPELINE_PYTHON_BIN);
     }
-    if (config.PYTHON_BIN) {
-      candidates.push(config.PYTHON_BIN);
+    if (process.env.PYTHON_BIN) {
+      candidates.push(process.env.PYTHON_BIN);
     }
 
     candidates.push("python3");
@@ -371,7 +421,7 @@ export class AdminVideoPipelineService {
     }
 
     try {
-      const templateRow = await db.get(sql`SELECT metadata FROM template_videos WHERE id = ${templateId}`);
+      const templateRow = await dbQueryOne(sql`SELECT metadata FROM template_videos WHERE id = ${templateId}`);
       if (!templateRow) {
         return;
       }
@@ -393,11 +443,19 @@ export class AdminVideoPipelineService {
         },
       });
 
-      await db.run(sql`
-        UPDATE template_videos
-        SET metadata = ${JSON.stringify(nextTemplateMetadata)}, updated_at = ${new Date().toISOString()}
-        WHERE id = ${templateId}
-      `);
+      if (isSQLite) {
+        await dbRun(sql`
+          UPDATE template_videos
+          SET metadata = ${JSON.stringify(nextTemplateMetadata)}, updated_at = ${new Date().toISOString()}
+          WHERE id = ${templateId}
+        `);
+      } else {
+        await dbRun(sql`
+          UPDATE template_videos
+          SET metadata = ${JSON.stringify(nextTemplateMetadata)}::jsonb, updated_at = ${new Date().toISOString()}::timestamp
+          WHERE id = ${templateId}
+        `);
+      }
     } catch (error) {
       logger.warn("[admin-pipeline] failed to sync template video metadata", {
         templateId,

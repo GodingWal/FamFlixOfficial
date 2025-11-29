@@ -12,21 +12,57 @@ import { spawn } from 'child_process';
 
 const router = Router();
 
+const isSQLite = process.env.DATABASE_URL?.startsWith('file:') ?? false;
+
+async function dbQuery(query: ReturnType<typeof sql>): Promise<any[]> {
+  if (isSQLite) {
+    return await (db as any).all(query);
+  } else {
+    const result = await db.execute(query);
+    return (result as any).rows || [];
+  }
+}
+
+async function dbQueryOne(query: ReturnType<typeof sql>): Promise<any | null> {
+  if (isSQLite) {
+    return await (db as any).get(query);
+  } else {
+    const result = await db.execute(query);
+    return (result as any).rows?.[0] || null;
+  }
+}
+
+async function dbRun(query: ReturnType<typeof sql>): Promise<any> {
+  if (isSQLite) {
+    return await (db as any).run(query);
+  } else {
+    return await db.execute(query);
+  }
+}
+
 const projectTranscriptDir = path.join(process.cwd(), 'uploads', 'admin-pipeline', 'project-transcripts');
 
 async function setProjectProgress(projectId: string | number, progress: number, stage: string) {
   try {
     const now = new Date().toISOString();
-    const row = await db.get(sql`SELECT metadata FROM video_projects WHERE id = ${projectId}`);
+    const row = await dbQueryOne(sql`SELECT metadata FROM video_projects WHERE id = ${projectId}`);
     const meta = parseMetadata(row?.metadata);
     const history = Array.isArray(meta.processingHistory) ? meta.processingHistory : [];
     history.push({ status: stage, timestamp: now });
     meta.processingHistory = history;
-    await db.run(sql`
-      UPDATE video_projects
-      SET processing_progress = ${progress}, metadata = ${JSON.stringify(meta)}, updated_at = ${now}
-      WHERE id = ${projectId}
-    `);
+    if (isSQLite) {
+      await dbRun(sql`
+        UPDATE video_projects
+        SET processing_progress = ${progress}, metadata = ${JSON.stringify(meta)}, updated_at = ${now}
+        WHERE id = ${projectId}
+      `);
+    } else {
+      await dbRun(sql`
+        UPDATE video_projects
+        SET processing_progress = ${progress}, metadata = ${JSON.stringify(meta)}::jsonb, updated_at = ${now}::timestamp
+        WHERE id = ${projectId}
+      `);
+    }
   } catch (e) {
     console.error('[processing] Failed to set progress:', e);
   }
@@ -173,7 +209,10 @@ async function runVoiceReplacementPipeline(
 }
 
 async function ensureVideoProjectsTable() {
-  await db.run(sql`
+  if (!isSQLite) {
+    return;
+  }
+  await dbRun(sql`
     CREATE TABLE IF NOT EXISTS video_projects (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
@@ -193,29 +232,30 @@ async function ensureVideoProjectsTable() {
     )
   `);
 
-  await db.run(sql`
+  await dbRun(sql`
     CREATE INDEX IF NOT EXISTS idx_video_projects_user_id ON video_projects(user_id)
   `);
 
-  await db.run(sql`
+  await dbRun(sql`
     CREATE INDEX IF NOT EXISTS idx_video_projects_status ON video_projects(status)
   `);
 
-  await db.run(sql`
+  await dbRun(sql`
     CREATE INDEX IF NOT EXISTS idx_video_projects_template_id ON video_projects(template_video_id)
   `);
 }
 
-// Runtime migration: ensure user_id column is TEXT (matching users.id)
 async function migrateVideoProjectsUserIdTypeIfNeeded() {
+  if (!isSQLite) {
+    return;
+  }
   try {
-    const columns = await db.all(sql`PRAGMA table_info(video_projects)`);
+    const columns = await dbQuery(sql`PRAGMA table_info(video_projects)`);
     const userIdCol = Array.isArray(columns) ? (columns as any[]).find(c => c.name === 'user_id') : null;
     if (userIdCol && typeof userIdCol.type === 'string' && /int/i.test(userIdCol.type)) {
-      // Perform SQLite table rebuild to change column type
-      await db.run(sql`PRAGMA foreign_keys = OFF`);
-      await db.run(sql.raw(`BEGIN TRANSACTION`));
-      await db.run(sql.raw(`
+      await dbRun(sql`PRAGMA foreign_keys = OFF`);
+      await dbRun(sql.raw(`BEGIN TRANSACTION`));
+      await dbRun(sql.raw(`
         CREATE TABLE IF NOT EXISTS video_projects_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id TEXT NOT NULL,
@@ -234,7 +274,7 @@ async function migrateVideoProjectsUserIdTypeIfNeeded() {
           FOREIGN KEY (template_video_id) REFERENCES template_videos(id) ON DELETE CASCADE
         )
       `));
-      await db.run(sql.raw(`
+      await dbRun(sql.raw(`
         INSERT INTO video_projects_new (
           id, user_id, template_video_id, voice_profile_id, face_image_url,
           status, output_video_url, processing_progress, processing_error, metadata,
@@ -256,13 +296,13 @@ async function migrateVideoProjectsUserIdTypeIfNeeded() {
           completed_at
         FROM video_projects
       `));
-      await db.run(sql.raw(`DROP TABLE video_projects`));
-      await db.run(sql.raw(`ALTER TABLE video_projects_new RENAME TO video_projects`));
-      await db.run(sql.raw(`CREATE INDEX IF NOT EXISTS idx_video_projects_user_id ON video_projects(user_id)`));
-      await db.run(sql.raw(`CREATE INDEX IF NOT EXISTS idx_video_projects_status ON video_projects(status)`));
-      await db.run(sql.raw(`CREATE INDEX IF NOT EXISTS idx_video_projects_template_id ON video_projects(template_video_id)`));
-      await db.run(sql.raw(`COMMIT`));
-      await db.run(sql`PRAGMA foreign_keys = ON`);
+      await dbRun(sql.raw(`DROP TABLE video_projects`));
+      await dbRun(sql.raw(`ALTER TABLE video_projects_new RENAME TO video_projects`));
+      await dbRun(sql.raw(`CREATE INDEX IF NOT EXISTS idx_video_projects_user_id ON video_projects(user_id)`));
+      await dbRun(sql.raw(`CREATE INDEX IF NOT EXISTS idx_video_projects_status ON video_projects(status)`));
+      await dbRun(sql.raw(`CREATE INDEX IF NOT EXISTS idx_video_projects_template_id ON video_projects(template_video_id)`));
+      await dbRun(sql.raw(`COMMIT`));
+      await dbRun(sql`PRAGMA foreign_keys = ON`);
       console.log('[migrate] video_projects.user_id migrated to TEXT');
     }
   } catch (err) {
@@ -287,8 +327,9 @@ router.post('/api/video-projects', authenticateToken, async (req: AuthRequest, r
 
     // Ensure required tables exist and verify template video exists
     await ensureTemplateVideosTable();
-    const templateVideo = await db.get(sql`
-      SELECT id, metadata FROM template_videos WHERE id = ${templateVideoIdNumber} AND is_active = 1
+    const isActiveValue = isSQLite ? 1 : true;
+    const templateVideo = await dbQueryOne(sql`
+      SELECT id, metadata FROM template_videos WHERE id = ${templateVideoIdNumber} AND is_active = ${isActiveValue}
     `);
 
     if (!templateVideo) {
@@ -328,29 +369,43 @@ router.post('/api/video-projects', authenticateToken, async (req: AuthRequest, r
         ? JSON.stringify(baseMetadata)
         : null;
 
-    const result = await db.run(sql`
-      INSERT INTO video_projects (
-        user_id, template_video_id, voice_profile_id, face_image_url,
-        status, processing_progress, metadata, created_at, updated_at
-      ) VALUES (
-        ${userId}, ${templateVideoIdNumber}, ${voiceProfileId || null}, 
-        ${faceImageUrl || null}, 'pending', 0, ${metadataPayload},
-        ${now.toISOString()}, ${now.toISOString()}
-      )
-    `);
-
-    const insertedId =
-      typeof result?.lastInsertRowid === 'number'
+    let insertedId: number | null = null;
+    
+    if (isSQLite) {
+      const result = await dbRun(sql`
+        INSERT INTO video_projects (
+          user_id, template_video_id, voice_profile_id, face_image_url,
+          status, processing_progress, metadata, created_at, updated_at
+        ) VALUES (
+          ${userId}, ${templateVideoIdNumber}, ${voiceProfileId || null}, 
+          ${faceImageUrl || null}, 'pending', 0, ${metadataPayload},
+          ${now.toISOString()}, ${now.toISOString()}
+        )
+      `);
+      insertedId = typeof result?.lastInsertRowid === 'number'
         ? result.lastInsertRowid
         : typeof result?.lastID === 'number'
         ? result.lastID
         : null;
+    } else {
+      const result = await db.execute(sql`
+        INSERT INTO video_projects (
+          user_id, template_video_id, voice_profile_id, face_image_url,
+          status, processing_progress, metadata, created_at, updated_at
+        ) VALUES (
+          ${userId}, ${templateVideoIdNumber}, ${voiceProfileId || null}, 
+          ${faceImageUrl || null}, 'pending', 0, ${metadataPayload}::jsonb,
+          ${now.toISOString()}::timestamp, ${now.toISOString()}::timestamp
+        ) RETURNING id
+      `);
+      insertedId = (result as any).rows?.[0]?.id ?? null;
+    }
 
     if (!insertedId) {
       throw new Error('Unable to determine newly created project ID');
     }
 
-    const project = await db.get(sql`
+    const project = await dbQueryOne(sql`
       SELECT vp.*, tv.title as template_title, tv.thumbnail_url as template_thumbnail
       FROM video_projects vp
       JOIN template_videos tv ON vp.template_video_id = tv.id
@@ -384,9 +439,15 @@ router.post('/api/video-projects', authenticateToken, async (req: AuthRequest, r
         meta = {};
       }
       meta.linkedVideoId = initialVideo.id;
-      await db.run(sql`
-        UPDATE video_projects SET metadata = ${JSON.stringify(meta)}, updated_at = ${new Date().toISOString()} WHERE id = ${insertedId}
-      `);
+      if (isSQLite) {
+        await dbRun(sql`
+          UPDATE video_projects SET metadata = ${JSON.stringify(meta)}, updated_at = ${new Date().toISOString()} WHERE id = ${insertedId}
+        `);
+      } else {
+        await dbRun(sql`
+          UPDATE video_projects SET metadata = ${JSON.stringify(meta)}::jsonb, updated_at = ${new Date().toISOString()}::timestamp WHERE id = ${insertedId}
+        `);
+      }
 
       res.status(201).json({ ...project, linkedVideoId: initialVideo.id });
     } catch (linkErr) {
@@ -404,7 +465,7 @@ router.post('/api/video-projects', authenticateToken, async (req: AuthRequest, r
 router.get('/api/video-projects', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
-    const projects = await db.all(sql`
+    const projects = await dbQuery(sql`
       SELECT vp.*, tv.title as template_title, tv.thumbnail_url as template_thumbnail,
              tv.category, tv.duration as template_duration
       FROM video_projects vp
@@ -426,7 +487,7 @@ router.get('/api/video-projects/:id', authenticateToken, async (req: AuthRequest
     const { id } = req.params;
     const userId = req.user!.id;
 
-    const project = await db.get(sql`
+    const project = await dbQueryOne(sql`
       SELECT vp.*, tv.title as template_title, tv.thumbnail_url as template_thumbnail,
              tv.video_url as template_video_url, tv.category, tv.difficulty
       FROM video_projects vp
@@ -453,7 +514,7 @@ router.patch('/api/video-projects/:id', authenticateToken, async (req: AuthReque
     const { voiceProfileId, faceImageUrl, status, processingProgress, outputVideoUrl, metadata } = req.body;
 
     // Verify ownership
-    const existing = await db.get(sql`
+    const existing = await dbQueryOne(sql`
       SELECT id FROM video_projects WHERE id = ${id} AND user_id = ${userId}
     `);
 
@@ -473,7 +534,11 @@ router.patch('/api/video-projects/:id', authenticateToken, async (req: AuthReque
     if (status !== undefined) {
       assignments.push(sql`status = ${status}`);
       if (status === 'completed') {
-        assignments.push(sql`completed_at = ${new Date().toISOString()}`);
+        if (isSQLite) {
+          assignments.push(sql`completed_at = ${new Date().toISOString()}`);
+        } else {
+          assignments.push(sql`completed_at = ${new Date().toISOString()}::timestamp`);
+        }
       }
     }
     if (processingProgress !== undefined) {
@@ -483,20 +548,28 @@ router.patch('/api/video-projects/:id', authenticateToken, async (req: AuthReque
       assignments.push(sql`output_video_url = ${outputVideoUrl}`);
     }
     if (metadata !== undefined) {
-      assignments.push(sql`metadata = ${JSON.stringify(metadata)}`);
+      if (isSQLite) {
+        assignments.push(sql`metadata = ${JSON.stringify(metadata)}`);
+      } else {
+        assignments.push(sql`metadata = ${JSON.stringify(metadata)}::jsonb`);
+      }
     }
 
-    assignments.push(sql`updated_at = ${new Date().toISOString()}`);
+    if (isSQLite) {
+      assignments.push(sql`updated_at = ${new Date().toISOString()}`);
+    } else {
+      assignments.push(sql`updated_at = ${new Date().toISOString()}::timestamp`);
+    }
 
     if (assignments.length > 0) {
-      await db.run(sql`
+      await dbRun(sql`
         UPDATE video_projects 
         SET ${sql.join(assignments, sql`, `)} 
         WHERE id = ${id}
       `);
     }
 
-    const updated = await db.get(sql`
+    const updated = await dbQueryOne(sql`
       SELECT vp.*, tv.title as template_title, tv.thumbnail_url as template_thumbnail
       FROM video_projects vp
       JOIN template_videos tv ON vp.template_video_id = tv.id
@@ -516,11 +589,12 @@ router.delete('/api/video-projects/:id', authenticateToken, async (req: AuthRequ
     const { id } = req.params;
     const userId = req.user!.id;
 
-    const result = await db.run(sql`
+    const result = await dbRun(sql`
       DELETE FROM video_projects WHERE id = ${id} AND user_id = ${userId}
     `);
 
-    if (result.changes === 0) {
+    const changes = isSQLite ? result?.changes : (result as any)?.rowCount;
+    if (changes === 0) {
       return res.status(404).json({ error: 'Project not found' });
     }
 
@@ -537,7 +611,7 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
     const { id } = req.params;
     const userId = req.user!.id;
 
-    const project = await db.get(sql`
+    const project = await dbQueryOne(sql`
       SELECT * FROM video_projects WHERE id = ${id} AND user_id = ${userId}
     `);
 
@@ -554,14 +628,14 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
 
     // Update status to processing
     const processingStartedAt = new Date().toISOString();
-    await db.run(sql`
+    await dbRun(sql`
       UPDATE video_projects
       SET status = 'processing', processing_progress = 0, updated_at = ${processingStartedAt}
       WHERE id = ${id}
     `);
 
     // Also mark the linked video as processing so it shows up in the library immediately
-    const projectWithMeta = await db.get(sql`
+    const projectWithMeta = await dbQueryOne(sql`
       SELECT vp.*, tv.title as template_title, tv.video_url as template_video_url, tv.thumbnail_url as template_thumbnail, tv.metadata as template_metadata
       FROM video_projects vp
       JOIN template_videos tv ON vp.template_video_id = tv.id
@@ -661,17 +735,31 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
           meta.transcriptPath = transcriptPath;
         }
 
-        await db.run(sql`
-          UPDATE video_projects
-          SET
-            status = 'completed',
-            processing_progress = 100,
-            output_video_url = ${outputUrl},
-            metadata = ${JSON.stringify(meta)},
-            updated_at = ${completionTimestamp},
-            completed_at = ${completionTimestamp}
-          WHERE id = ${id}
-        `);
+        if (isSQLite) {
+          await dbRun(sql`
+            UPDATE video_projects
+            SET
+              status = 'completed',
+              processing_progress = 100,
+              output_video_url = ${outputUrl},
+              metadata = ${JSON.stringify(meta)},
+              updated_at = ${completionTimestamp},
+              completed_at = ${completionTimestamp}
+            WHERE id = ${id}
+          `);
+        } else {
+          await dbRun(sql`
+            UPDATE video_projects
+            SET
+              status = 'completed',
+              processing_progress = 100,
+              output_video_url = ${outputUrl},
+              metadata = ${JSON.stringify(meta)}::jsonb,
+              updated_at = ${completionTimestamp}::timestamp,
+              completed_at = ${completionTimestamp}::timestamp
+            WHERE id = ${id}
+          `);
+        }
 
         console.log('[processing] completed. output url:', outputUrl);
         if (linkedVideoId) {
@@ -691,15 +779,27 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
       } catch (err: any) {
         console.error('[processing] Voice replacement failed:', err?.message || err);
         const failedAt = new Date().toISOString();
-        await db.run(sql`
-          UPDATE video_projects
-          SET
-            status = 'failed',
-            processing_progress = 100,
-            processing_error = ${String(err?.message || 'Voice replacement failed')},
-            updated_at = ${failedAt}
-          WHERE id = ${id}
-        `);
+        if (isSQLite) {
+          await dbRun(sql`
+            UPDATE video_projects
+            SET
+              status = 'failed',
+              processing_progress = 100,
+              processing_error = ${String(err?.message || 'Voice replacement failed')},
+              updated_at = ${failedAt}
+            WHERE id = ${id}
+          `);
+        } else {
+          await dbRun(sql`
+            UPDATE video_projects
+            SET
+              status = 'failed',
+              processing_progress = 100,
+              processing_error = ${String(err?.message || 'Voice replacement failed')},
+              updated_at = ${failedAt}::timestamp
+            WHERE id = ${id}
+          `);
+        }
         // Optionally mark linked video as error (schema uses 'error')
         if (linkedVideoId) {
           try {
