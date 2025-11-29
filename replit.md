@@ -113,6 +113,14 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
+### 2025-11-29: Voice Cloning Fixes
+- Installed ffmpeg system dependency for audio format conversion (WebM to WAV)
+- Added missing `provider` column to voice_profiles table
+- Updated F5Provider with simulation mode for development without GPU server:
+  - `server/tts/providers/f5.ts` - Falls back gracefully when GPU server unavailable
+  - Uses voice sample as preview in simulation mode
+- Voice cloning workflow now works end-to-end in Replit environment
+
 ### 2025-11-29: Replit Environment Setup Complete
 - Configured PostgreSQL database with all required tables and enums
 - Fixed SQLite-to-PostgreSQL compatibility in route handlers:

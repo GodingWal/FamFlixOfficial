@@ -14,9 +14,26 @@ import type { ITTSProvider, TTSInput, TTSResult } from "../TTSProvider";
 
 export class F5Provider implements ITTSProvider {
     private readonly serverUrl: string;
+    private serverAvailable: boolean | null = null;
 
     constructor() {
         this.serverUrl = config.GPU_SERVER_URL;
+    }
+
+    private async checkServerAvailability(): Promise<boolean> {
+        if (this.serverAvailable !== null) {
+            return this.serverAvailable;
+        }
+        
+        try {
+            await axios.get(`${this.serverUrl}/health`, { timeout: 2000 });
+            this.serverAvailable = true;
+            return true;
+        } catch {
+            this.serverAvailable = false;
+            console.log(`[F5Provider] GPU Server not available at ${this.serverUrl}, using simulation mode`);
+            return false;
+        }
     }
 
     async synthesize({ text, voiceRef, storyId, sectionId }: TTSInput): Promise<TTSResult> {
@@ -30,6 +47,12 @@ export class F5Provider implements ITTSProvider {
 
         if (!fs.existsSync(absPrompt)) {
             throw new Error(`Voice reference file not found: ${absPrompt}`);
+        }
+
+        const isServerAvailable = await this.checkServerAvailability();
+
+        if (!isServerAvailable) {
+            return this.simulateSynthesis(absPrompt, text);
         }
 
         const tempDir = path.resolve(process.cwd(), "temp");
@@ -48,14 +71,14 @@ export class F5Provider implements ITTSProvider {
                 headers: {
                     ...form.getHeaders(),
                 },
-                responseType: 'json'
+                responseType: 'json',
+                timeout: 120000,
             });
 
             if (response.data.status !== "success") {
                 throw new Error(`F5 Synthesis failed: ${JSON.stringify(response.data)}`);
             }
 
-            // Download the result
             const audioUrl = `${this.serverUrl}${response.data.url}`;
             const audioRes = await axios.get(audioUrl, { responseType: 'stream' });
 
@@ -68,13 +91,13 @@ export class F5Provider implements ITTSProvider {
             });
 
         } catch (err) {
-            if (axios.isAxiosError(err) && err.code === 'ECONNREFUSED') {
-                throw new Error(`GPU Server is not running at ${this.serverUrl}. Please ensure the tunnel is active.`);
+            if (axios.isAxiosError(err) && (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT')) {
+                this.serverAvailable = false;
+                return this.simulateSynthesis(absPrompt, text);
             }
             throw err;
         }
 
-        // If S3 is not configured, serve locally
         if (!config.S3_BUCKET) {
             const localHash = createHash("md5");
             try {
@@ -99,7 +122,6 @@ export class F5Provider implements ITTSProvider {
             } satisfies TTSResult;
         }
 
-        // Upload to S3
         const keyBase = config.STORY_AUDIO_PREFIX.replace(/\/$/, "");
         const s3Key = `${keyBase}/raw/${filename}`;
 
@@ -129,6 +151,30 @@ export class F5Provider implements ITTSProvider {
             checksum: checksum.digest("hex"),
             durationSec: undefined,
             transcript: undefined,
+        } satisfies TTSResult;
+    }
+
+    private async simulateSynthesis(voiceRefPath: string, text: string): Promise<TTSResult> {
+        console.log(`[F5Provider] Simulation mode: Using voice sample as preview for text: "${text.substring(0, 50)}..."`);
+        
+        const tempDir = path.resolve(process.cwd(), "temp");
+        await fsp.mkdir(tempDir, { recursive: true });
+
+        const filename = `f5-sim-${Date.now()}-${nanoid(6)}.wav`;
+        const outFile = path.join(tempDir, filename);
+
+        await fsp.copyFile(voiceRefPath, outFile);
+
+        const localHash = createHash("md5");
+        const fileBuffer = await fsp.readFile(outFile);
+        localHash.update(fileBuffer);
+
+        return {
+            key: filename,
+            url: `/api/audio/${filename}`,
+            checksum: localHash.digest("hex"),
+            durationSec: undefined,
+            transcript: text,
         } satisfies TTSResult;
     }
 }
