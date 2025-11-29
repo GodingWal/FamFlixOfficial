@@ -18,6 +18,7 @@ const configSchema = z.object({
 
   // API Keys
   OPENAI_API_KEY: z.string().optional(),
+  ELEVENLABS_API_KEY: z.string().optional(),
 
 
   // Rate Limiting
@@ -45,8 +46,8 @@ const configSchema = z.object({
     .default(() => (process.env.NODE_ENV === "development" ? "true" : "false")),
   FEATURE_STORY_MODE: z.string().transform((val) => val === "true").default("false"),
   TTS_PROVIDER: z
-    .enum(["PLAYHT", "AZURE", "COQUI", "MOCK", "F5", "RVC"] as const)
-    .default("F5"),
+    .enum(["PLAYHT", "AZURE", "COQUI", "MOCK", "F5", "RVC", "ELEVENLABS"] as const)
+    .default("ELEVENLABS"),
   STORY_AUDIO_PREFIX: z.string().default("stories"),
 
   // File Upload

@@ -2,11 +2,13 @@ import { config } from "../config";
 import type { ITTSProvider } from "./TTSProvider";
 import { F5Provider } from "./providers/f5";
 import { RVCProvider } from "./providers/rvc";
+import { ElevenLabsProvider } from "./providers/elevenlabs";
 
 const providers: Partial<Record<string, ITTSProvider>> = {};
 
 providers.F5 = new F5Provider();
 providers.RVC = new RVCProvider();
+providers.ELEVENLABS = new ElevenLabsProvider();
 
 export function getTTSProvider(provider?: string): ITTSProvider {
   const key = provider ?? config.TTS_PROVIDER;
@@ -21,4 +23,8 @@ export function getTTSProvider(provider?: string): ITTSProvider {
 
 export function hasTTSProvider(provider: string): boolean {
   return Boolean(providers[provider]);
+}
+
+export function getElevenLabsProvider(): ElevenLabsProvider {
+  return providers.ELEVENLABS as ElevenLabsProvider;
 }

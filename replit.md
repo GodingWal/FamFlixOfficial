@@ -81,9 +81,10 @@ The application supports both SQLite (file-based) and PostgreSQL. The database t
 
 ### Voice Cloning Providers
 The application supports multiple TTS providers:
-- **F5**: Default provider for speech synthesis
-- **RVC**: Used for singing/vocal cloning
-- Additional providers can be configured via the `TTS_PROVIDER` env var
+- **ElevenLabs** (Default): Real AI voice cloning via ElevenLabs API - requires `ELEVENLABS_API_KEY`
+- **F5**: Local provider for speech synthesis (requires GPU server)
+- **RVC**: Used for singing/vocal cloning (requires GPU server)
+- Provider can be configured via the `TTS_PROVIDER` env var
 
 ### Known Warnings
 - **GPU/Ollama Warnings**: Expected in cloud environment, app falls back to simulation mode

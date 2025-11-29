@@ -5,7 +5,7 @@ import path from "path";
 import { nanoid } from "nanoid";
 import { spawn } from "child_process";
 import { config } from "../config";
-import { getTTSProvider } from "../tts";
+import { getTTSProvider, getElevenLabsProvider } from "../tts";
 
 export class VoiceService {
   private readonly audioStoragePath = path.resolve(process.cwd(), "uploads", "audio");
@@ -104,11 +104,10 @@ export class VoiceService {
 
   async createVoiceCloneFromFiles(audioFiles: Buffer[], name: string, userId: string, familyId?: string, recordingMetadata?: any[]): Promise<string> {
     try {
-      console.log(`Creating zero-shot voice clone for ${name} with ${audioFiles.length} audio files...`);
+      console.log(`Creating voice clone for ${name} with ${audioFiles.length} audio files...`);
 
       const metaList = Array.isArray(recordingMetadata) ? recordingMetadata : [];
 
-      // Determine durations, falling back to analyzing a safe, temporary WAV view when needed
       const augmentedFiles: Array<{ buffer: Buffer; metadata?: any; duration: number }> = [];
       for (let i = 0; i < audioFiles.length; i++) {
         const originalBuffer = audioFiles[i];
@@ -116,12 +115,11 @@ export class VoiceService {
         let duration: number | undefined = typeof metadata?.duration === 'number' ? metadata.duration : undefined;
 
         try {
-          // Use a separate buffer for analysis so we never mutate the original recording bytes
           let analysisBuffer = originalBuffer;
           if (!this.isWavBuffer(analysisBuffer)) {
             analysisBuffer = await this.decodeAudioToWav(analysisBuffer).catch(() => Buffer.alloc(0));
           }
-          if (duration === undefined) {
+          if (duration === undefined && analysisBuffer.length > 0) {
             const info = await this.analyzeAudioBuffer(analysisBuffer);
             duration = info.duration;
             console.log(`[voice] analyzed input #${i}: ${info.format} ${info.channels}ch @ ${info.sampleRate}Hz, ${info.bitDepth}bit, duration=${duration?.toFixed?.(2) ?? duration}s`);
@@ -130,14 +128,12 @@ export class VoiceService {
           // If analysis fails, duration remains undefined
         }
 
-        // Fallback rough estimate if analysis failed: assume 24kHz mono float32 (~96kB/sec)
         if (!Number.isFinite(duration as number)) {
           const est = Math.max(0, Math.round((originalBuffer.length / 96000) * 100) / 100);
           duration = est;
           console.warn(`[voice] duration analysis failed for input #${i}; using size-based estimate ~${est}s from ${originalBuffer.length} bytes`);
         }
 
-        // Always push the ORIGINAL buffer so downstream preprocessing can properly decode (e.g., webm/mp3 -> WAV)
         augmentedFiles.push({ buffer: originalBuffer, metadata, duration: Number(duration) });
       }
 
@@ -147,48 +143,80 @@ export class VoiceService {
         throw new Error("No valid audio recordings were provided. Please include at least one clip longer than 3 seconds.");
       }
 
-      // Preprocess to consistent WAV for cloning (minimal processing to preserve voice identity)
-      const processedRecordings: Array<{ buffer: Buffer; duration: number; metadata?: any }> = [];
+      const processedRecordings: Array<{ buffer: Buffer; duration: number; metadata?: any; filePath: string }> = [];
       for (const recording of validAudioFiles) {
         const processedAudio = await this.preprocessVoicePrompt(recording.buffer);
-        processedRecordings.push({ buffer: processedAudio, duration: recording.duration, metadata: recording.metadata });
+        const audioFileName = `${nanoid()}_${Date.now()}_sample.wav`;
+        const audioFilePath = path.join(this.audioStoragePath, audioFileName);
+        await fs.writeFile(audioFilePath, processedAudio);
+        processedRecordings.push({ 
+          buffer: processedAudio, 
+          duration: recording.duration, 
+          metadata: recording.metadata,
+          filePath: audioFilePath,
+        });
       }
 
       const totalDuration = processedRecordings.reduce((sum, rec) => sum + rec.duration, 0);
 
-      // Create a single audio prompt file (combined if multiple)
-      const promptBuffer = processedRecordings.length > 1
-        ? await this.combineProcessedAudioFiles(processedRecordings.map(r => r.buffer))
-        : processedRecordings[0].buffer;
+      const elevenLabs = getElevenLabsProvider();
+      let providerRef: string;
+      let provider: string;
 
-      const audioFileName = `${nanoid()}_${Date.now()}_prompt.wav`;
-      const audioFilePath = path.join(this.audioStoragePath, audioFileName);
-      await fs.writeFile(audioFilePath, promptBuffer);
+      if (elevenLabs.isConfigured()) {
+        console.log(`[voice] Using ElevenLabs for voice cloning...`);
+        provider = "ELEVENLABS";
+        
+        try {
+          const voiceId = await elevenLabs.createVoiceClone(
+            name,
+            processedRecordings.map(r => r.filePath),
+            `Voice clone for ${name} - Created via FamFlix`
+          );
+          providerRef = voiceId;
+          console.log(`[voice] ElevenLabs voice created: ${voiceId}`);
+        } catch (error: any) {
+          console.error("[voice] ElevenLabs cloning failed:", error);
+          throw new Error(`Voice cloning failed: ${error.message}`);
+        }
+      } else {
+        console.log(`[voice] ElevenLabs not configured, storing local audio prompt...`);
+        provider = this.defaultProvider;
+        
+        const promptBuffer = processedRecordings.length > 1
+          ? await this.combineProcessedAudioFiles(processedRecordings.map(r => r.buffer))
+          : processedRecordings[0].buffer;
 
-      // Create voice profile pointing to the prompt file
+        const audioFileName = `${nanoid()}_${Date.now()}_prompt.wav`;
+        const audioFilePath = path.join(this.audioStoragePath, audioFileName);
+        await fs.writeFile(audioFilePath, promptBuffer);
+        providerRef = audioFilePath;
+      }
+
+      const audioSampleUrl = processedRecordings.length > 0 
+        ? `/uploads/audio/${path.basename(processedRecordings[0].filePath)}`
+        : undefined;
+
       const voiceProfile = await storage.createVoiceProfile({
         name,
         userId,
         familyId,
-        provider: this.defaultProvider as any,
-        providerRef: audioFilePath, // Local path used by the TTS provider as the audio prompt
-        audioSampleUrl: `/uploads/audio/${audioFileName}`,
+        provider: provider as any,
+        providerRef,
+        audioSampleUrl,
         trainingProgress: 100,
         status: "ready",
         metadata: {
           isRealClone: true,
-          cloneType: "zero_shot",
+          cloneType: provider === "ELEVENLABS" ? "elevenlabs_ivc" : "zero_shot",
           totalInputDuration: totalDuration,
           createdAt: new Date().toISOString(),
-          voice: {
-            audioPromptPath: audioFilePath,
-          },
           originalDurations: processedRecordings.map(rec => rec.duration),
           originalFileSizes: validAudioFiles.map(rec => rec.buffer.length),
         },
       } as InsertVoiceProfile);
 
-      console.log(`Voice profile created with providerRef=${audioFilePath}`);
+      console.log(`Voice profile created: ${voiceProfile.id} with provider=${provider}`);
       return voiceProfile.id;
     } catch (error: any) {
       console.error("Voice cloning error:", error);
