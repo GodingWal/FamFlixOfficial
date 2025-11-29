@@ -32,3 +32,7 @@ coverage/
 # Python caches
 __pycache__/
 *.py[cod]
+
+# Replit
+.replit
+replit.nix
