@@ -28,6 +28,9 @@ interface TranscriptData {
   transcribedAt: string | null;
   duration: number | null;
   source: string;
+  editedAt?: string | null;
+  editedBy?: string | null;
+  pipelineStatus?: string | null;
 }
 
 interface TemplateVideo {
@@ -67,6 +70,9 @@ export default function AdminVideoCatalog() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcriptData, setTranscriptData] = useState<TranscriptData | null>(null);
   const [isLoadingTranscript, setIsLoadingTranscript] = useState(false);
+  const [isEditingTranscript, setIsEditingTranscript] = useState(false);
+  const [editedSegments, setEditedSegments] = useState<TranscriptSegment[]>([]);
+  const [isSavingTranscript, setIsSavingTranscript] = useState(false);
 
   const { data, isLoading } = useQuery<TemplateVideo[]>({
     queryKey: ["/api/template-videos", "admin"],
@@ -87,12 +93,16 @@ export default function AdminVideoCatalog() {
     if (!selectedVideo) {
       setFormState({});
       setTranscriptData(null);
+      setIsEditingTranscript(false);
+      setEditedSegments([]);
       return;
     }
     setFormState({
       ...selectedVideo,
       tagsInput: selectedVideo.tags.join(", "),
     });
+    setIsEditingTranscript(false);
+    setEditedSegments([]);
     
     const loadTranscript = async () => {
       setIsLoadingTranscript(true);
@@ -367,43 +377,58 @@ export default function AdminVideoCatalog() {
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <Label className="text-base font-semibold">AI Transcript</Label>
-                      <Button
-                        type="button"
-                        variant={transcriptData ? "outline" : "default"}
-                        size="sm"
-                        disabled={isTranscribing}
-                        onClick={async () => {
-                          if (!selectedVideo) return;
-                          setIsTranscribing(true);
-                          try {
-                            const response = await apiRequest("POST", `/api/template-videos/${selectedVideo.id}/transcribe`);
-                            if (!response.ok) {
-                              const error = await response.json().catch(() => ({}));
-                              throw new Error(error.error || "Failed to generate transcript");
+                      <div className="flex gap-2">
+                        {transcriptData && !isEditingTranscript && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setEditedSegments([...transcriptData.segments]);
+                              setIsEditingTranscript(true);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                        )}
+                        <Button
+                          type="button"
+                          variant={transcriptData ? "outline" : "default"}
+                          size="sm"
+                          disabled={isTranscribing || isEditingTranscript}
+                          onClick={async () => {
+                            if (!selectedVideo) return;
+                            setIsTranscribing(true);
+                            try {
+                              const response = await apiRequest("POST", `/api/template-videos/${selectedVideo.id}/transcribe`);
+                              if (!response.ok) {
+                                const error = await response.json().catch(() => ({}));
+                                throw new Error(error.error || "Failed to generate transcript");
+                              }
+                              const data = await response.json();
+                              setTranscriptData({
+                                transcript: data.transcript,
+                                segments: data.segments || [],
+                                transcribedAt: data.transcribedAt,
+                                duration: data.duration,
+                                source: 'gemini_ai'
+                              });
+                              toast({ title: "Transcript generated", description: `${data.segments?.length || 0} segments transcribed.` });
+                              queryClient.invalidateQueries({ queryKey: ["/api/template-videos", "admin"] });
+                            } catch (error: any) {
+                              toast({
+                                title: "Transcription failed",
+                                description: error?.message || "Unable to generate transcript.",
+                                variant: "destructive",
+                              });
+                            } finally {
+                              setIsTranscribing(false);
                             }
-                            const data = await response.json();
-                            setTranscriptData({
-                              transcript: data.transcript,
-                              segments: data.segments || [],
-                              transcribedAt: data.transcribedAt,
-                              duration: data.duration,
-                              source: 'gemini_ai'
-                            });
-                            toast({ title: "Transcript generated", description: `${data.segments?.length || 0} segments transcribed.` });
-                            queryClient.invalidateQueries({ queryKey: ["/api/template-videos", "admin"] });
-                          } catch (error: any) {
-                            toast({
-                              title: "Transcription failed",
-                              description: error?.message || "Unable to generate transcript.",
-                              variant: "destructive",
-                            });
-                          } finally {
-                            setIsTranscribing(false);
-                          }
-                        }}
-                      >
-                        {isTranscribing ? "Transcribing..." : transcriptData ? "Re-transcribe" : "Generate with AI"}
-                      </Button>
+                          }}
+                        >
+                          {isTranscribing ? "Transcribing..." : transcriptData ? "Re-transcribe" : "Generate with AI"}
+                        </Button>
+                      </div>
                     </div>
                     
                     {isLoadingTranscript ? (
@@ -419,17 +444,117 @@ export default function AdminVideoCatalog() {
                           Click "Generate with AI" to transcribe the video using Gemini AI.
                         </p>
                       </div>
+                    ) : isEditingTranscript ? (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                          <Badge variant="default">Editing</Badge>
+                          <Badge variant="outline">{editedSegments.length} segments</Badge>
+                        </div>
+                        
+                        <ScrollArea className="h-[250px] rounded-md border bg-muted/10 p-3">
+                          <div className="space-y-3">
+                            {editedSegments.map((segment, index) => (
+                              <div key={index} className="flex gap-2 items-start">
+                                <span className="font-mono text-xs text-muted-foreground whitespace-nowrap min-w-[100px] pt-2">
+                                  {formatTimestamp(segment.start)} - {formatTimestamp(segment.end)}
+                                </span>
+                                <Textarea
+                                  value={segment.text}
+                                  onChange={(e) => {
+                                    const newSegments = [...editedSegments];
+                                    newSegments[index] = { ...segment, text: e.target.value };
+                                    setEditedSegments(newSegments);
+                                  }}
+                                  rows={2}
+                                  className="flex-1 text-sm"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </ScrollArea>
+                        
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={isSavingTranscript}
+                            onClick={async () => {
+                              if (!selectedVideo) return;
+                              setIsSavingTranscript(true);
+                              try {
+                                const response = await apiRequest("PATCH", `/api/template-videos/${selectedVideo.id}/transcript`, {
+                                  segments: editedSegments
+                                });
+                                if (!response.ok) {
+                                  const error = await response.json().catch(() => ({}));
+                                  throw new Error(error.error || "Failed to save transcript");
+                                }
+                                const data = await response.json();
+                                setTranscriptData({
+                                  transcript: data.transcript,
+                                  segments: data.segments || [],
+                                  transcribedAt: data.transcribedAt,
+                                  duration: data.duration,
+                                  source: data.source,
+                                  editedAt: data.editedAt,
+                                  editedBy: data.editedBy,
+                                  pipelineStatus: data.pipelineStatus
+                                });
+                                setIsEditingTranscript(false);
+                                setEditedSegments([]);
+                                toast({ 
+                                  title: "Transcript saved", 
+                                  description: "Your edits have been saved. Re-process videos to apply the new transcript.",
+                                });
+                              } catch (error: any) {
+                                toast({
+                                  title: "Save failed",
+                                  description: error?.message || "Unable to save transcript.",
+                                  variant: "destructive",
+                                });
+                              } finally {
+                                setIsSavingTranscript(false);
+                              }
+                            }}
+                          >
+                            {isSavingTranscript ? "Saving..." : "Save Changes"}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={isSavingTranscript}
+                            onClick={() => {
+                              setIsEditingTranscript(false);
+                              setEditedSegments([]);
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                        
+                        <p className="text-xs text-muted-foreground">
+                          Edit the text for each segment. Timestamps are preserved for audio synchronization.
+                        </p>
+                      </div>
                     ) : (
                       <div className="space-y-3">
                         <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                          <Badge variant="secondary">Gemini AI</Badge>
+                          <Badge variant={transcriptData.source === 'admin_edited' ? 'default' : 'secondary'}>
+                            {transcriptData.source === 'admin_edited' ? 'Edited' : 'Gemini AI'}
+                          </Badge>
                           {transcriptData.duration && (
                             <Badge variant="outline">{Math.round(transcriptData.duration)}s duration</Badge>
                           )}
                           {transcriptData.segments.length > 0 && (
                             <Badge variant="outline">{transcriptData.segments.length} segments</Badge>
                           )}
-                          {transcriptData.transcribedAt && (
+                          {transcriptData.editedAt ? (
+                            <span className="text-muted-foreground">
+                              Edited: {new Date(transcriptData.editedAt).toLocaleString()}
+                              {transcriptData.editedBy && ` by ${transcriptData.editedBy}`}
+                            </span>
+                          ) : transcriptData.transcribedAt && (
                             <span className="text-muted-foreground">
                               Transcribed: {new Date(transcriptData.transcribedAt).toLocaleString()}
                             </span>
@@ -467,6 +592,12 @@ export default function AdminVideoCatalog() {
                             </div>
                           </TabsContent>
                         </Tabs>
+                        
+                        {transcriptData.pipelineStatus === 'needs_regeneration' && (
+                          <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+                            Transcript has been edited. Videos using this template will need to be re-processed to use the updated text.
+                          </div>
+                        )}
                         
                         <p className="text-xs text-muted-foreground">
                           This transcript with timestamps is used for synchronized voice cloning.

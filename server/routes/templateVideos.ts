@@ -456,16 +456,120 @@ router.get('/api/template-videos/:id/transcript', authenticateToken, async (req:
       });
     }
 
+    const source = metadata.transcriptSource || (metadata.editedAt ? 'admin_edited' : 'gemini_ai');
+    
     res.json({
       transcript,
       segments,
       transcribedAt,
       duration,
-      source: 'gemini_ai'
+      source,
+      editedAt: metadata.editedAt || null,
+      editedBy: metadata.editedBy || null,
+      pipelineStatus: metadata.pipelineStatus || null
     });
   } catch (error) {
     console.error('Get template transcript error:', error);
     res.status(500).json({ error: 'Failed to get transcript' });
+  }
+});
+
+router.patch('/api/template-videos/:id/transcript', authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
+    }
+
+    await ensureTemplateVideosTable();
+    const { id } = req.params;
+    const { segments } = req.body;
+
+    if (!segments || !Array.isArray(segments)) {
+      return res.status(400).json({ error: 'segments array is required' });
+    }
+
+    if (segments.length === 0) {
+      return res.status(400).json({ error: 'At least one segment is required' });
+    }
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      if (typeof seg.start !== 'number' || typeof seg.end !== 'number' || typeof seg.text !== 'string') {
+        return res.status(400).json({ error: `Invalid segment at index ${i}: must have start (number), end (number), and text (string)` });
+      }
+      if (!Number.isFinite(seg.start) || !Number.isFinite(seg.end)) {
+        return res.status(400).json({ error: `Invalid timing at segment ${i}: start and end must be finite numbers` });
+      }
+      if (seg.start < 0 || seg.end <= seg.start) {
+        return res.status(400).json({ error: `Invalid timing at segment ${i}: start must be >= 0 and end must be > start` });
+      }
+      if (seg.end - seg.start < 0.05) {
+        return res.status(400).json({ error: `Segment ${i} duration too short: minimum 0.05 seconds required` });
+      }
+      if (i > 0 && seg.start < segments[i - 1].end) {
+        return res.status(400).json({ error: `Overlapping segments at index ${i}: start (${seg.start}) is before previous segment's end (${segments[i - 1].end})` });
+      }
+      if (!seg.text.trim()) {
+        return res.status(400).json({ error: `Segment ${i} has empty text` });
+      }
+    }
+
+    const template = await dbQueryOne(sql`SELECT * FROM template_videos WHERE id = ${id}`);
+    if (!template) {
+      return res.status(404).json({ error: 'Template video not found' });
+    }
+
+    const cleanedSegments = segments.map((s: { start: number; end: number; text: string }) => ({
+      start: s.start,
+      end: s.end,
+      text: s.text.trim()
+    }));
+    
+    const fullText = cleanedSegments.map((s: { text: string }) => s.text).join(' ');
+    const lastSegment = cleanedSegments[cleanedSegments.length - 1];
+    const transcriptDuration = lastSegment.end;
+
+    const existingMeta = parseMetadata(template.metadata);
+    const updatedMeta = {
+      ...existingMeta,
+      transcript: fullText,
+      transcriptSegments: cleanedSegments,
+      transcriptDuration,
+      transcriptSource: 'admin_edited',
+      editedAt: new Date().toISOString(),
+      editedBy: req.user?.email || req.user?.id || 'admin',
+      pipelineStatus: 'needs_regeneration'
+    };
+
+    if (isSQLite) {
+      await dbRun(sql`
+        UPDATE template_videos
+        SET metadata = ${JSON.stringify(updatedMeta)}, updated_at = ${new Date().toISOString()}
+        WHERE id = ${id}
+      `);
+    } else {
+      await dbRun(sql`
+        UPDATE template_videos
+        SET metadata = ${JSON.stringify(updatedMeta)}::jsonb, updated_at = ${new Date().toISOString()}::timestamp
+        WHERE id = ${id}
+      `);
+    }
+
+    console.log(`[templateVideos] Transcript edited for template ${id} by ${updatedMeta.editedBy}: ${cleanedSegments.length} segments`);
+
+    res.json({
+      transcript: fullText,
+      segments: cleanedSegments,
+      transcribedAt: existingMeta.transcribedAt || null,
+      duration: transcriptDuration,
+      source: 'admin_edited',
+      editedAt: updatedMeta.editedAt,
+      editedBy: updatedMeta.editedBy,
+      pipelineStatus: 'needs_regeneration'
+    });
+  } catch (error) {
+    console.error('Update transcript error:', error);
+    res.status(500).json({ error: 'Failed to update transcript' });
   }
 });
 
