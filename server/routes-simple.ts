@@ -793,7 +793,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const profileId = req.params.profileId;
       const { familyId, targetSeconds = 20 } = req.body ?? {};
 
-      const profile = await storage.getVoiceProfile(profileId);
+      let profile = await storage.getVoiceProfile(profileId);
       if (!profile) {
         return res.status(404).json({ error: 'Voice profile not found' });
       }
@@ -802,6 +802,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       if (profile.status !== 'ready') {
         return res.status(400).json({ error: 'Voice profile is not ready yet' });
+      }
+
+      // Auto-migrate non-ElevenLabs profiles if ElevenLabs is configured
+      const { getElevenLabsProvider } = await import('./tts');
+      const elevenLabs = getElevenLabsProvider();
+      
+      console.log(`[preview] Profile provider: ${profile.provider}, ElevenLabs configured: ${elevenLabs.isConfigured()}`);
+      
+      if (profile.provider !== 'ELEVENLABS' && elevenLabs.isConfigured()) {
+        console.log(`[preview] Auto-migrating voice profile ${profileId} to ElevenLabs...`);
+        
+        const audioPath = profile.providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
+        if (audioPath) {
+          try {
+            const fsp = await import('fs/promises');
+            await fsp.access(audioPath);
+            
+            const voiceId = await elevenLabs.createVoiceClone(
+              profile.name,
+              [audioPath],
+              `Voice clone for ${profile.name} - Migrated from ${profile.provider}`
+            );
+            
+            await storage.updateVoiceProfile(profileId, {
+              provider: 'ELEVENLABS' as any,
+              providerRef: voiceId,
+              metadata: {
+                ...(profile.metadata || {}),
+                migratedFrom: profile.provider,
+                migratedAt: new Date().toISOString(),
+                elevenLabsVoiceId: voiceId,
+              }
+            });
+            
+            profile = await storage.getVoiceProfile(profileId);
+            console.log(`[preview] Successfully migrated to ElevenLabs voice: ${voiceId}`);
+          } catch (migrationError: any) {
+            console.error(`[preview] Migration failed:`, migrationError.message);
+          }
+        }
       }
 
       const familyContext = familyId ? await storage.getFamily(familyId) : null;
@@ -816,7 +856,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (ttsError: any) {
         const message = String(ttsError?.message || '').trim() || 'TTS unavailable for preview';
         previewWarning = message;
-        console.error('TTS generation failed for preview (simple):', message);
+        console.error('TTS generation failed for preview:', message);
       }
 
       res.json({
@@ -826,8 +866,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...(generation ? {} : { warning: previewWarning || 'TTS unavailable for preview' }),
       });
     } catch (error: any) {
-      console.error('Voice preview error (simple):', error);
+      console.error('Voice preview error:', error);
       res.status(400).json({ error: error.message || 'Failed to generate preview' });
+    }
+  });
+
+  // Migrate voice profile to ElevenLabs
+  app.post('/api/voice-profiles/:profileId/migrate-to-elevenlabs', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const profileId = req.params.profileId;
+
+      const profile = await storage.getVoiceProfile(profileId);
+      if (!profile) {
+        return res.status(404).json({ error: "Voice profile not found" });
+      }
+      if (profile.userId !== req.user!.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      if (profile.provider === 'ELEVENLABS') {
+        return res.json({ message: "Profile already uses ElevenLabs", profile });
+      }
+
+      const { getElevenLabsProvider } = await import('./tts');
+      const elevenLabs = getElevenLabsProvider();
+
+      if (!elevenLabs.isConfigured()) {
+        return res.status(400).json({ error: "ElevenLabs API key is not configured" });
+      }
+
+      const audioPath = profile.providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
+      if (!audioPath) {
+        return res.status(400).json({ error: "No audio sample found for this profile" });
+      }
+
+      const fsp = await import('fs/promises');
+      await fsp.access(audioPath);
+
+      const voiceId = await elevenLabs.createVoiceClone(
+        profile.name,
+        [audioPath],
+        `Voice clone for ${profile.name} - Migrated from ${profile.provider}`
+      );
+
+      await storage.updateVoiceProfile(profileId, {
+        provider: 'ELEVENLABS' as any,
+        providerRef: voiceId,
+        metadata: {
+          ...(profile.metadata || {}),
+          migratedFrom: profile.provider,
+          migratedAt: new Date().toISOString(),
+          elevenLabsVoiceId: voiceId,
+          originalProviderRef: audioPath,
+        }
+      });
+
+      const updatedProfile = await storage.getVoiceProfile(profileId);
+      res.json({ message: "Successfully migrated to ElevenLabs", profile: updatedProfile });
+    } catch (error: any) {
+      console.error('Voice migration error:', error);
+      res.status(400).json({ error: error.message || 'Failed to migrate voice profile' });
     }
   });
 

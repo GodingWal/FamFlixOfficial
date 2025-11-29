@@ -114,6 +114,17 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
+### 2025-11-29: ElevenLabs Voice Cloning Integration
+- Added real AI voice cloning via ElevenLabs Instant Voice Cloning (IVC) API
+- Created ElevenLabsProvider (`server/tts/providers/elevenlabs.ts`) for:
+  - Creating voice clones from audio samples
+  - Text-to-speech synthesis with cloned voices
+  - Voice management (list, delete)
+- Updated voice preview in `server/routes-simple.ts` to auto-migrate F5 profiles to ElevenLabs
+- Added migration endpoint: `POST /api/voice-profiles/:id/migrate-to-elevenlabs`
+- Voice preview now uses real ElevenLabs TTS instead of simulation
+- **Note**: Requires valid `ELEVENLABS_API_KEY` secret to be set
+
 ### 2025-11-29: Voice Cloning Fixes
 - Installed ffmpeg system dependency for audio format conversion (WebM to WAV)
 - Added missing `provider` column to voice_profiles table

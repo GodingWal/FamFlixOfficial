@@ -1174,6 +1174,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { getElevenLabsProvider } = await import('./tts');
       const elevenLabs = getElevenLabsProvider();
       
+      console.log(`[preview] Profile provider: ${profile.provider}, ElevenLabs configured: ${elevenLabs.isConfigured()}`);
+      
       if (profile.provider !== 'ELEVENLABS' && elevenLabs.isConfigured()) {
         console.log(`[preview] Auto-migrating voice profile ${profileId} to ElevenLabs...`);
         
