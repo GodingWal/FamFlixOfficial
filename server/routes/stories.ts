@@ -308,17 +308,11 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
         continue;
       }
 
-      // Determine provider based on section type
+      // Use the voice profile's provider - don't override with F5 for ELEVENLABS voices
+      // since ElevenLabs uses voice IDs while F5 requires local file paths
       let providerKey = defaultProviderKey;
-      if (section.sectionType === "singing") {
+      if (section.sectionType === "singing" && defaultProviderKey !== "ELEVENLABS") {
         providerKey = "RVC";
-      } else if (section.sectionType === "speech") {
-        try {
-          getTTSProvider("F5");
-          providerKey = "F5";
-        } catch {
-          // F5 not available
-        }
       }
 
       const provider = getTTSProvider(providerKey);
