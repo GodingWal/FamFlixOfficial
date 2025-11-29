@@ -10,6 +10,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { spawn } from 'child_process';
 import { ElevenLabsProvider } from '../tts/providers/elevenlabs';
+import { transcriptionService } from '../services/transcriptionService';
 
 const router = Router();
 
@@ -770,52 +771,102 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
         // Get transcript text - needed for ElevenLabs synthesis
         let transcriptPath: string | null = null;
         let transcriptText: string = '';
+        let transcriptSegments: any[] = [];
+        let transcriptSource: string = 'none';
         
+        // First, try to get existing transcript from source video metadata
         if (sourceVideoId) {
           try {
             const sourceVideo = await storage.getVideo(sourceVideoId);
             if (sourceVideo?.metadata) {
               const sourceMeta = parseMetadata((sourceVideo as any).metadata);
-              const transcriptSegments = (sourceMeta?.pipeline as any)?.transcription?.segments;
-              if (Array.isArray(transcriptSegments)) {
-                // Extract text from segments for ElevenLabs
-                transcriptText = transcriptSegments
+              const existingSegments = (sourceMeta?.pipeline as any)?.transcription?.segments;
+              if (Array.isArray(existingSegments) && existingSegments.length > 0) {
+                transcriptSegments = existingSegments;
+                transcriptText = existingSegments
                   .map((s: any) => s.text?.trim())
                   .filter(Boolean)
                   .join(' ');
-                
-                transcriptPath = await persistProjectTranscript(id, transcriptSegments);
-                if (transcriptPath) {
-                  await setProjectProgress(id, 10, 'transcript_ready');
-                }
+                transcriptSource = 'source_video';
+                console.log('[processing] Found existing transcript from source video:', transcriptText.slice(0, 100) + '...');
               }
             }
           } catch (transcriptErr) {
-            console.warn('[processing] Unable to prepare transcript for project', {
-              projectId: id,
-              error: transcriptErr instanceof Error ? transcriptErr.message : transcriptErr,
-            });
+            console.warn('[processing] Unable to get transcript from source video:', transcriptErr);
           }
         }
 
-        // If no transcript from source video, try to get it from template metadata
+        // If no transcript from source video, try template metadata
         if (!transcriptText && templateMetadata?.transcript) {
           transcriptText = typeof templateMetadata.transcript === 'string' 
             ? templateMetadata.transcript 
             : JSON.stringify(templateMetadata.transcript);
+          transcriptSource = 'template_metadata';
+          console.log('[processing] Found transcript from template metadata:', transcriptText.slice(0, 100) + '...');
         }
 
-        await setProjectProgress(id, transcriptPath ? 20 : 15, 'pipeline_spawn');
+        // If still no transcript and using ElevenLabs, use Gemini AI to transcribe the video
+        if (!transcriptText && isElevenLabs) {
+          console.log('[processing] No existing transcript found, using Gemini AI to transcribe video...');
+          await setProjectProgress(id, 10, 'transcribing');
+          
+          if (!transcriptionService.isConfigured()) {
+            throw new Error('Transcription service is not configured. Gemini AI integration required for voice replacement.');
+          }
+          
+          try {
+            const transcriptionResult = await transcriptionService.transcribeVideo(inputVideoPath);
+            transcriptText = transcriptionResult.fullText;
+            transcriptSegments = transcriptionResult.segments;
+            transcriptSource = 'gemini_ai';
+            console.log('[processing] Gemini transcription complete:', transcriptText.slice(0, 100) + '...');
+            console.log('[processing] Transcription duration:', transcriptionResult.duration, 'seconds');
+          } catch (transcribeErr) {
+            console.error('[processing] Transcription failed:', transcribeErr);
+            throw new Error(`Failed to transcribe video: ${transcribeErr instanceof Error ? transcribeErr.message : 'Unknown error'}`);
+          }
+        }
+
+        // Persist transcript if we have segments (for any source)
+        if (transcriptSegments.length > 0) {
+          transcriptPath = await persistProjectTranscript(id, transcriptSegments);
+        }
+        
+        // Mark transcript as ready if we have transcript text (from any source)
+        if (transcriptText) {
+          await setProjectProgress(id, 20, 'transcript_ready');
+          console.log('[processing] Transcript ready from source:', transcriptSource);
+        }
+
+        await setProjectProgress(id, 25, 'pipeline_spawn');
 
         if (isElevenLabs) {
           // Use ElevenLabs TTS for voice replacement
           if (!transcriptText) {
-            throw new Error('No transcript available for ElevenLabs voice synthesis. Please ensure the template video has a transcript.');
+            throw new Error('No transcript available for ElevenLabs voice synthesis. Please ensure the video has audio to transcribe.');
           }
           console.log('[processing] Using ElevenLabs voice replacement');
+          console.log('[processing] Transcript text length:', transcriptText.length, 'characters');
+          await setProjectProgress(id, 30, 'tts_synthesis');
           await runElevenLabsVoiceReplacement(inputVideoPath, outputVideoPath, providerRef, transcriptText);
         } else {
           // Use Python pipeline for local voice cloning (F5/RVC)
+          // For non-ElevenLabs, we still need a transcript for the pipeline
+          // Try Gemini transcription if configured and no transcript yet
+          if (!transcriptText && transcriptionService.isConfigured()) {
+            console.log('[processing] Using Gemini AI to transcribe video for local pipeline...');
+            await setProjectProgress(id, 10, 'transcribing');
+            try {
+              const transcriptionResult = await transcriptionService.transcribeVideo(inputVideoPath);
+              transcriptText = transcriptionResult.fullText;
+              transcriptSegments = transcriptionResult.segments;
+              transcriptPath = await persistProjectTranscript(id, transcriptSegments);
+              await setProjectProgress(id, 20, 'transcript_ready');
+            } catch (transcribeErr) {
+              console.warn('[processing] Transcription failed, continuing without transcript:', transcribeErr);
+            }
+          }
+          
           const promptPath = providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
           if (!promptPath) {
             throw new Error('Voice profile is missing an audio prompt path');

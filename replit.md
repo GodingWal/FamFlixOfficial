@@ -144,6 +144,19 @@ The application supports multiple TTS providers:
   - Uses voice sample as preview in simulation mode
 - Voice cloning workflow now works end-to-end in Replit environment
 
+### 2025-11-29: Video Processing Pipeline with Gemini + ElevenLabs
+- Added Gemini AI integration for video transcription (`server/services/transcriptionService.ts`)
+  - Extracts audio from video using ffmpeg
+  - Uses Gemini 2.5 Flash to transcribe audio to text
+  - Supports chunking for large files (>8MB limit)
+  - Built-in rate limiting and retries
+- Updated video processing pipeline to use real AI services:
+  - First transcribes the video using Gemini AI if no existing transcript
+  - Then uses ElevenLabs to synthesize speech with the cloned voice
+  - Finally replaces the original audio with the new synthesized audio using ffmpeg
+- Processing stages: starting → transcribing → transcript_ready → tts_synthesis → completed
+- Uses Replit AI Integrations (billed to credits, no separate API key needed for Gemini)
+
 ### 2025-11-29: Replit Environment Setup Complete
 - Configured PostgreSQL database with all required tables and enums
 - Fixed SQLite-to-PostgreSQL compatibility in route handlers:
