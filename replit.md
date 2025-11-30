@@ -114,17 +114,24 @@ The application supports multiple TTS providers:
 
 ## Recent Changes
 
-### 2025-11-29: Simplified Voice Cloning UI
-- Completely redesigned the voice cloning page with a clean 3-step wizard
-- Step 1: Name your voice - Simple input with gradient icon
-- Step 2: Record or upload - Large circular recording indicator with timer
-- Step 3: Preview & create - Confirmation screen with voice details
-- Modern step indicator with progress visualization
-- Clean card-based design with consistent spacing
-- Visual feedback for recording state (pulsing red), ready state (green)
-- Existing voice profiles shown in a grid below the wizard
-- Removed complex multi-sentence recording flow in favor of single recording
-- Removed tabs and simplified to single focused flow
+### 2025-11-30: Enhanced Voice Cloning with Noise Suppression
+- Completely redesigned voice cloning with 5-step guided wizard:
+  - Step 1 (Intro): Name your voice + feature highlights
+  - Step 2 (Environment): Microphone check with real-time noise level detection
+  - Step 3 (Record): Guided recording with sample scripts to read
+  - Step 4 (Review): Listen and verify recording quality
+  - Step 5 (Create): Final confirmation and voice clone creation
+- Built-in browser noise suppression using Web Audio API constraints:
+  - `noiseSuppression: true` - Removes background noise
+  - `echoCancellation: true` - Eliminates echo
+  - `autoGainControl: true` - Normalizes volume levels
+- Real-time audio visualization with waveform display
+- Noise level indicator (Low/Medium/High) with visual feedback
+- Sample scripts provided for consistent voice capture:
+  - Natural Greeting, Short Story, Emotional Range options
+- Quality tips and environment setup guidance
+- Progress indicator showing current step
+- Accessible buttons with aria-labels throughout
 
 ### 2025-11-29: Background Audio Preservation
 - Added `preserveBackground` option to video processing pipeline
