@@ -112,7 +112,46 @@ The application supports multiple TTS providers:
 └── scripts/         # Utility scripts
 ```
 
+## Subscription Tiers
+
+### Plans and Pricing
+- **Free** ($0/month): 2 videos, 2 stories, 1 voice clone, shows ads
+- **Premium** ($20/month): 5 videos, 5 stories, 2 voice clones, no ads
+- **Pro** ($40/month): Unlimited videos, unlimited stories, 5 voice clones, no ads
+
+### Usage Tracking
+- Monthly usage tracked in `usage_tracking` table
+- Limits reset at the start of each calendar month
+- Video count increments when project is created
+- Story count increments when narration starts (not on re-reads)
+- Voice clone limit is total per account (not monthly)
+
+### Key Files
+- `shared/subscriptions.ts` - Plan definitions and limits
+- `server/services/usageService.ts` - Usage tracking and limit enforcement
+- `server/services/billingService.ts` - Stripe integration
+- `client/src/lib/pricing.ts` - Frontend plan display
+- `client/src/components/AdBanner.tsx` - Ad component for free users
+- `client/src/components/UsageSummary.tsx` - Usage display component
+- `client/src/hooks/useUsage.ts` - Usage data hook
+
+### Stripe Integration
+Requires these environment variables for paid upgrades:
+- `STRIPE_SECRET_KEY` - Stripe API secret key
+- `STRIPE_PUBLISHABLE_KEY` - Stripe publishable key (for frontend)
+- `STRIPE_WEBHOOK_SECRET` - For processing payment events
+
 ## Recent Changes
+
+### 2025-12-01: Subscription Tiers Implementation
+- Added three subscription tiers: Free ($0), Premium ($20), Pro ($40)
+- Created usage tracking table for monthly video/story counts
+- Implemented limit enforcement on video creation and story narration
+- Added `/api/usage` endpoint for retrieving usage status
+- Created AdBanner component showing upgrade prompts for free users
+- Created UsageSummary component showing usage progress
+- Updated Pricing page with plan comparison and Stripe checkout
+- Voice clone limits enforced at profile creation
 
 ### 2025-11-30: Enhanced Voice Cloning with Noise Suppression
 - Completely redesigned voice cloning with 5-step guided wizard:

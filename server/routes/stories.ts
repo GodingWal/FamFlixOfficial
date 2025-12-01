@@ -18,6 +18,7 @@ import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import { Readable } from "stream";
+import { usageService } from "../services/usageService";
 
 const router = Router();
 
@@ -320,17 +321,48 @@ router.post("/api/stories/:slug/read", authenticateToken, ensureStoryModeEnabled
     return res.status(403).json({ error: "You do not have access to this voice profile" });
   }
 
+  // Check existing audio for this story+voice combination
+  const existingAudioPre = await storage.getStoryAudioForVoice(story.id, voiceId);
+  const sections = await storage.getStorySections(story.id);
+  
+  // Only consider it "fully narrated" if ALL sections have completed audio
+  const allSectionsComplete = sections.length > 0 && 
+    sections.every(section => 
+      existingAudioPre.some(a => a.sectionId === section.id && a.status === "COMPLETED" && a.audioUrl)
+    );
+  
+  // Check story limit for new narrations or partial narrations
+  if (!allSectionsComplete) {
+    // Check if user has already been charged for this story (track in metadata)
+    const hasBeenCounted = existingAudioPre.some(a => {
+      const meta = typeof a.metadata === 'string' ? JSON.parse(a.metadata || '{}') : (a.metadata || {});
+      return meta.usageCounted === true;
+    });
+    
+    if (!hasBeenCounted) {
+      const limitCheck = await usageService.checkStoryLimit(req.user!.id);
+      if (!limitCheck.allowed) {
+        return res.status(403).json({
+          error: limitCheck.message,
+          code: "LIMIT_EXCEEDED",
+          upgradeRequired: true
+        });
+      }
+      // Increment story count for new narration (will be marked after first section completes)
+      await usageService.incrementStoryCount(req.user!.id);
+    }
+  }
+
   const providerKey = voice.provider ?? config.TTS_PROVIDER;
   if (!hasTTSProvider(providerKey)) {
     return res.status(400).json({ error: `TTS provider '${providerKey}' is not configured` });
   }
 
-  const sections = await storage.getStorySections(story.id);
   if (sections.length === 0) {
     return res.status(400).json({ error: "Story has no sections to synthesize" });
   }
 
-  const existingAudio = await storage.getStoryAudioForVoice(story.id, voiceId);
+  const existingAudio = existingAudioPre;
   const audioMap = new Map(existingAudio.map((audio) => [audio.sectionId, audio]));
   const needsRegeneration = sections.filter((section) => {
     const entry = audioMap.get(section.id);

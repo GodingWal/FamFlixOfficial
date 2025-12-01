@@ -2,7 +2,7 @@ import Stripe from "stripe";
 import { config } from "../config";
 import { logger } from "../utils/logger-simple";
 import { storage } from "../storage";
-import { subscriptionPlans, type SubscriptionPlan } from "@shared/subscriptions";
+import { subscriptionPlans, type SubscriptionPlan, PLAN_LIMITS } from "@shared/subscriptions";
 
 const stripeApiVersion = "2024-06-20" as Stripe.LatestApiVersion;
 
@@ -10,12 +10,12 @@ type PaidSubscriptionPlan = Exclude<SubscriptionPlan, "free">;
 
 const PLAN_DETAILS: Record<PaidSubscriptionPlan, { amount: number; name: string }> = {
   premium: {
-    amount: 1999,
+    amount: 2000, // $20.00
     name: "FamFlix Premium",
   },
-  family_pro: {
-    amount: 3999,
-    name: "FamFlix Family Pro",
+  pro: {
+    amount: 4000, // $40.00
+    name: "FamFlix Pro",
   },
 };
 

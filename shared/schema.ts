@@ -168,6 +168,19 @@ export const activityLogs = pgTable("activity_logs", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const usageTracking = pgTable("usage_tracking", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+  periodStart: timestamp("period_start").notNull(),
+  periodEnd: timestamp("period_end").notNull(),
+  videosCreated: integer("videos_created").default(0).notNull(),
+  storiesCreated: integer("stories_created").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (usageTracking) => ({
+  userPeriodUnique: uniqueIndex("usage_tracking_user_period_unique").on(usageTracking.userId, usageTracking.periodStart),
+}));
+
 export const songTemplates = pgTable("song_templates", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   title: varchar("title", { length: 200 }).notNull(),
@@ -279,6 +292,14 @@ export const usersRelations = relations(users, ({ many }) => ({
   emailVerificationTokens: many(emailVerificationTokens),
   passwordResetTokens: many(passwordResetTokens),
   adPreferences: many(adPreferences),
+  usageTracking: many(usageTracking),
+}));
+
+export const usageTrackingRelations = relations(usageTracking, ({ one }) => ({
+  user: one(users, {
+    fields: [usageTracking.userId],
+    references: [users.id],
+  }),
 }));
 
 export const emailVerificationTokensRelations = relations(emailVerificationTokens, ({ one }) => ({

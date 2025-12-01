@@ -8,6 +8,12 @@ export interface PricingPlan {
   headline: string;
   features: string[];
   highlight?: boolean;
+  limits: {
+    videosPerMonth: number | 'unlimited';
+    storiesPerMonth: number | 'unlimited';
+    voiceClones: number;
+    showAds: boolean;
+  };
 }
 
 export const pricingPlans: PricingPlan[] = [
@@ -15,41 +21,65 @@ export const pricingPlans: PricingPlan[] = [
     plan: "free",
     name: "Free",
     priceMonthly: 0,
-    description: "Create and share core family stories with essential tools.",
-    headline: "Get started at no cost",
+    description: "Get started with basic features to explore the platform.",
+    headline: "Try it free",
     features: [
-      "Up to 5 collaborative projects",
-      "Basic AI story generation",
-      "Standard voice cloning (1 voice)",
-      "720p video exports",
+      "2 videos per month",
+      "2 stories per month",
+      "1 voice clone",
+      "Basic video exports",
+      "Community support",
     ],
+    limits: {
+      videosPerMonth: 2,
+      storiesPerMonth: 2,
+      voiceClones: 1,
+      showAds: true,
+    },
   },
   {
     plan: "premium",
     name: "Premium",
-    priceMonthly: 19.99,
-    description: "Unlock advanced creative tools and higher quality output.",
-    headline: "Best for creative families",
+    priceMonthly: 20,
+    description: "Perfect for families who want more creative freedom.",
+    headline: "Most popular choice",
     features: [
-      "Unlimited projects & stories",
-      "Advanced AI voice studio (5 voices)",
-      "1080p video exports with custom branding",
-      "Priority processing and support",
+      "5 videos per month",
+      "5 stories per month",
+      "2 voice clones",
+      "HD video exports",
+      "No ads",
+      "Priority support",
     ],
     highlight: true,
+    limits: {
+      videosPerMonth: 5,
+      storiesPerMonth: 5,
+      voiceClones: 2,
+      showAds: false,
+    },
   },
   {
-    plan: "family_pro",
-    name: "Family Pro",
-    priceMonthly: 39.99,
-    description: "Collaborate across extended families with premium features.",
-    headline: "Everything for growing families",
+    plan: "pro",
+    name: "Pro",
+    priceMonthly: 40,
+    description: "For power users and content creators who need it all.",
+    headline: "Unlimited creativity",
     features: [
-      "Unlimited shared family workspaces",
-      "Studio-quality voice cloning (15 voices)",
-      "4K HDR video exports & archival storage",
-      "Early access to new AI storytelling tools",
+      "Unlimited videos",
+      "Unlimited stories",
+      "5 voice clones",
+      "4K video exports",
+      "No ads",
+      "Priority support",
+      "API access",
     ],
+    limits: {
+      videosPerMonth: 'unlimited',
+      storiesPerMonth: 'unlimited',
+      voiceClones: 5,
+      showAds: false,
+    },
   },
 ];
 
@@ -61,7 +91,7 @@ export const formatMonthlyPrice = (price: number) => {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-    minimumFractionDigits: 2,
+    minimumFractionDigits: 0,
   }).format(price);
 };
 

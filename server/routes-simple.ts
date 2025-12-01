@@ -35,6 +35,7 @@ import {
 import { billingService } from "./services/billingService";
 import { ensureTemplateVideosTable } from "./utils/templateVideos";
 import { adminVideoPipelineService } from "./services/adminVideoPipelineService";
+import { usageService } from "./services/usageService";
 
 // Multer configuration for file uploads
 const upload = multer({
@@ -519,6 +520,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Usage status endpoint
+  app.get('/api/usage', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const usageStatus = await usageService.getUsageStatus(req.user!.id);
+      res.json(usageStatus);
+    } catch (error) {
+      console.error('Get usage status error:', error);
+      res.status(500).json({ error: "Failed to get usage status" });
+    }
+  });
+
   // Family management routes
   app.post('/api/families', authenticateToken, async (req: AuthRequest, res) => {
     try {
@@ -556,6 +568,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!name || name.trim().length === 0) {
         return res.status(400).json({ error: "Valid name is required" });
+      }
+
+      // Check voice clone limit
+      const limitCheck = await usageService.checkVoiceCloneLimit(req.user!.id);
+      if (!limitCheck.allowed) {
+        return res.status(403).json({ 
+          error: limitCheck.message,
+          code: "LIMIT_EXCEEDED",
+          upgradeRequired: true
+        });
       }
 
       // Create voice profile using the voice service

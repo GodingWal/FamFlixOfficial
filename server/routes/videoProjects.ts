@@ -11,6 +11,7 @@ import fs from 'fs/promises';
 import { spawn } from 'child_process';
 import { ElevenLabsProvider } from '../tts/providers/elevenlabs';
 import { transcriptionService } from '../services/transcriptionService';
+import { usageService } from '../services/usageService';
 
 const router = Router();
 
@@ -817,6 +818,16 @@ router.post('/api/video-projects', authenticateToken, async (req: AuthRequest, r
     const { templateVideoId, voiceProfileId, faceImageUrl, metadata } = req.body;
     const userId = req.user!.id;
 
+    // Check video creation limit
+    const limitCheck = await usageService.checkVideoLimit(userId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({ 
+        error: limitCheck.message,
+        code: "LIMIT_EXCEEDED",
+        upgradeRequired: true
+      });
+    }
+
     if (templateVideoId === undefined || templateVideoId === null) {
       return res.status(400).json({ error: 'Template video ID is required' });
     }
@@ -956,6 +967,12 @@ router.post('/api/video-projects', authenticateToken, async (req: AuthRequest, r
       console.error('Failed to create linked library video:', linkErr);
       res.status(201).json(project);
     }
+    
+    // Increment video usage count AFTER response is sent (fire and forget)
+    // This prevents double-counting on retries since only one project is created per request
+    usageService.incrementVideoCount(userId).catch((usageErr) => {
+      console.error('[video-projects] Failed to increment video count:', usageErr);
+    });
   } catch (error) {
     console.error('Error creating video project:', error);
     res.status(500).json({ error: 'Failed to create video project' });
@@ -1360,6 +1377,7 @@ router.post('/api/video-projects/:id/process', authenticateToken, async (req: Au
         }
 
         console.log('[processing] completed. output url:', outputUrl);
+        
         if (linkedVideoId) {
           try {
             const linkedVideoUpdates: Record<string, unknown> = {
