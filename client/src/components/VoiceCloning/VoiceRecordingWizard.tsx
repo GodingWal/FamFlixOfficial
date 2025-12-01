@@ -45,43 +45,67 @@ interface VoiceRecordingWizardProps {
 const RECORDING_PROMPTS = [
   {
     id: 'intro',
-    title: 'Introduction',
-    text: 'Hello, my name is [Your Name]. I\'m excited to create my voice profile today.',
-    description: 'Start with a clear introduction using your natural speaking voice.',
-    minDuration: 5,
-    maxDuration: 15,
-  },
-  {
-    id: 'story',
-    title: 'Personal Story',
-    text: 'Let me tell you about my favorite childhood memory. When I was young, I used to spend summers at my grandparents\' house, where we would sit on the porch and watch the sunset together.',
-    description: 'Share a personal story with emotion and varied intonation.',
-    minDuration: 15,
-    maxDuration: 30,
-  },
-  {
-    id: 'reading',
-    title: 'Reading Sample',
-    text: 'The quick brown fox jumps over the lazy dog. This sentence contains every letter of the alphabet and helps capture the full range of speech sounds.',
-    description: 'Read this text clearly and at a moderate pace.',
-    minDuration: 8,
+    title: 'Phase 1: Introduction',
+    text: 'Hello there! My name is [Your Name], and today I am recording my voice for a very special project. I hope this recording captures my natural speaking voice perfectly. Thank you for listening to me today.',
+    description: 'Speak naturally and clearly. This captures your baseline voice.',
+    minDuration: 12,
     maxDuration: 20,
   },
   {
-    id: 'conversation',
-    title: 'Conversational',
-    text: 'So, what do you think about the weather today? I personally love sunny days because they make me feel energetic and optimistic about everything.',
-    description: 'Speak as if you\'re having a casual conversation with a friend.',
-    minDuration: 10,
+    id: 'alphabet',
+    title: 'Phase 2: Letters & Numbers',
+    text: 'A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z. Now counting: one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty.',
+    description: 'Say each letter and number clearly with brief pauses between them.',
+    minDuration: 15,
     maxDuration: 25,
   },
   {
-    id: 'expressive',
-    title: 'Expressive Reading',
-    text: 'Wow, that\'s amazing! I can\'t believe how beautiful this place is. The mountains are so tall, and the lake is crystal clear. It\'s absolutely breathtaking!',
-    description: 'Express excitement and wonder in your voice.',
-    minDuration: 8,
-    maxDuration: 20,
+    id: 'phonetics',
+    title: 'Phase 3: Phonetic Phrases',
+    text: 'The thick thistle thickets threatened the three thriving thrushes. She sells seashells by the seashore. Peter Piper picked a peck of pickled peppers. How much wood would a woodchuck chuck if a woodchuck could chuck wood?',
+    description: 'Practice these tongue twisters slowly and clearly to capture all speech sounds.',
+    minDuration: 15,
+    maxDuration: 25,
+  },
+  {
+    id: 'story',
+    title: 'Phase 4: Storytelling',
+    text: 'Once upon a time, in a faraway land, there lived a kind old wizard who loved to tell stories by the fireplace. Every evening, children from the village would gather around to hear tales of brave knights, magical creatures, and hidden treasures buried deep within enchanted forests.',
+    description: 'Tell this story with emotion and varied intonation like you are reading to a child.',
+    minDuration: 18,
+    maxDuration: 28,
+  },
+  {
+    id: 'questions',
+    title: 'Phase 5: Questions & Responses',
+    text: 'What time is it? It is half past three. Where are you going? I am going to the store. How was your day today? My day was absolutely wonderful, thank you for asking! Did you remember to bring the keys? Yes, I have them right here in my pocket.',
+    description: 'Use natural question intonation, then answer with declarative statements.',
+    minDuration: 15,
+    maxDuration: 25,
+  },
+  {
+    id: 'emotions',
+    title: 'Phase 6: Emotional Range',
+    text: 'I am so incredibly happy right now! This is the best day ever! Oh no, that is really sad news, I am so sorry to hear that. Wait, what? Are you serious? I cannot believe this is happening! Well, that is interesting, I suppose I will have to think about it more carefully.',
+    description: 'Express joy, sadness, surprise, and thoughtfulness in your voice.',
+    minDuration: 15,
+    maxDuration: 25,
+  },
+  {
+    id: 'directions',
+    title: 'Phase 7: Instructions & Commands',
+    text: 'Please open the door and walk inside. Turn left at the first hallway, then continue straight ahead. You will find the kitchen on your right. Remember to close the window before you leave, and do not forget to lock the front door behind you.',
+    description: 'Speak clearly and authoritatively, as if giving directions to someone.',
+    minDuration: 15,
+    maxDuration: 25,
+  },
+  {
+    id: 'conversation',
+    title: 'Phase 8: Natural Conversation',
+    text: 'You know, I was thinking about what you said earlier, and I think you might be right about that. It is funny how things work out sometimes, is it not? Anyway, let me know what you decide, and we can figure out the rest together. I really appreciate you taking the time to help me with this.',
+    description: 'Speak casually and naturally, as if talking to a close friend.',
+    minDuration: 15,
+    maxDuration: 25,
   },
 ];
 
@@ -858,7 +882,25 @@ export const VoiceRecordingWizard: React.FC<VoiceRecordingWizardProps> = ({
       {/* Recording Steps Overview */}
       <Card>
         <CardContent className="pt-3 pb-3">
-          <div className="grid grid-cols-5 gap-1 sm:gap-2">
+          {/* Total Duration Progress */}
+          <div className="mb-3 p-2 bg-muted/50 rounded-lg">
+            <div className="flex items-center justify-between text-sm mb-1">
+              <span className="font-medium">Total Sample Duration</span>
+              <span className="text-muted-foreground">
+                {Math.floor(recordings.reduce((acc, r) => acc + r.duration, 0) / 60)}:
+                {(recordings.reduce((acc, r) => acc + r.duration, 0) % 60).toString().padStart(2, '0')} / 2:00 target
+              </span>
+            </div>
+            <Progress 
+              value={Math.min(100, (recordings.reduce((acc, r) => acc + r.duration, 0) / 120) * 100)} 
+              className="h-2"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Complete all 8 phases to reach the 2-minute target for optimal voice cloning quality.
+            </p>
+          </div>
+          
+          <div className="grid grid-cols-4 sm:grid-cols-8 gap-1 sm:gap-2">
             {RECORDING_PROMPTS.map((prompt, index) => {
               const recording = recordings[index];
               const isActive = index === currentStep;
@@ -870,7 +912,7 @@ export const VoiceRecordingWizard: React.FC<VoiceRecordingWizardProps> = ({
                   className={cn(
                     "flex flex-col items-center space-y-1 p-2 rounded-lg transition-colors",
                     isActive && "bg-primary/10 border-2 border-primary",
-                    isCompleted && !isActive && "bg-green-50 border border-green-200"
+                    isCompleted && !isActive && "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800"
                   )}
                 >
                   <div className={cn(
@@ -881,13 +923,13 @@ export const VoiceRecordingWizard: React.FC<VoiceRecordingWizardProps> = ({
                   )}>
                     {isCompleted ? <CheckCircle className="w-3 h-3" /> : index + 1}
                   </div>
-                  <span className="text-xs text-center font-medium leading-tight">
-                    {prompt.title}
+                  <span className="text-xs text-center font-medium leading-tight hidden sm:block">
+                    {prompt.title.replace('Phase ', '').replace(/^\d+:\s*/, '')}
                   </span>
                   {isCompleted && (
-                    <Badge variant="secondary" className="text-xs">
-                      {recording.quality.score}/100
-                    </Badge>
+                    <span className="text-xs text-green-600 dark:text-green-400">
+                      {recording.duration}s
+                    </span>
                   )}
                 </div>
               );

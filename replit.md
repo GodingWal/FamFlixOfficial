@@ -1,266 +1,36 @@
 # FamFlixW - Replit Environment Setup
 
-## Project Overview
-FamFlixW is a full-stack video creation and voice cloning application built with:
-- **Frontend**: React + Vite + TypeScript
-- **Backend**: Express.js + TypeScript
+## Overview
+FamFlixW is a full-stack application for video creation and voice cloning. It enables users to create videos, generate stories, and clone voices using AI-powered services. The project aims to provide a robust platform for content creators, offering features like AI transcription, text-to-speech synthesis with cloned voices, and a flexible subscription model.
+
+## User Preferences
+I prefer detailed explanations and iterative development. Ask before making major changes. Do not make changes to the folder `Z`. Do not make changes to the file `Y`.
+
+## System Architecture
+The application uses a monorepo structure with a React + Vite + TypeScript frontend and an Express.js + TypeScript backend. It integrates with a PostgreSQL database via Drizzle ORM. The system is designed for both development (SQLite support) and production (PostgreSQL). The backend serves the frontend, running on port 5000. Core features include:
+- **UI/UX**: The voice recording wizard has 8 phases for extended voice sample collection (2 minutes total), with real-time audio visualization, noise level indication, and responsive layouts. Admin interfaces include a transcript viewer with timeline and text views.
+- **Technical Implementations**:
+    - **Database**: PostgreSQL with 17 tables (users, videos, stories, voice_profiles, etc.) and 4 enum types. Drizzle ORM manages schema with migration support.
+    - **Voice Cloning**: Guided 5-step wizard with built-in browser noise suppression (noiseSuppression, echoCancellation, autoGainControl) using Web Audio API. Supports ElevenLabs, F5, and RVC providers.
+    - **Video Processing Pipeline**: Integrates Gemini AI for transcription and ElevenLabs for speech synthesis. Processes videos through stages: starting, transcribing, transcript_ready, tts_synthesis, completed.
+    - **Audio Synchronization**: Segment-by-segment audio synthesis and time-stretching using FFmpeg to match original timing. Preserves gaps with silence.
+    - **Background Audio Preservation**: Option to duck original audio (-12dB) during speech segments, mixing synthesized voice while preserving background sounds.
+    - **Transcript Editing**: Admin functionality for editing video transcripts with robust validation, preserving segment timings, and flagging videos for re-processing.
+    - **Subscription Tiers**: Implemented Free, Premium, and Pro plans with usage tracking (videos, stories, voice clones) and monthly reset.
+- **System Design Choices**: The application supports both SQLite (file-based) and PostgreSQL, with automatic detection based on the `DATABASE_URL`. Redis is used conditionally for background job processing (e.g., Story Mode). Vite's `allowedHosts: true` is configured for Replit's proxy.
+
+## External Dependencies
 - **Database**: PostgreSQL (Replit built-in)
 - **ORM**: Drizzle ORM
-- **Voice Cloning**: F5/RVC providers (AI-powered)
-
-## Architecture
-- **Monorepo Structure**: Client and server code in single repository
-- **Integrated Server**: Backend serves frontend via Vite dev middleware in development
-- **Port**: Application runs on port 5000 (both frontend and backend)
-- **Database**: PostgreSQL with 17 tables including users, videos, stories, voice profiles, etc.
-
-## Environment Configuration
-
-### Required Environment Variables (Set in Replit Secrets)
-- `DATABASE_URL`: PostgreSQL connection string (auto-configured by Replit)
-- `JWT_SECRET`: JWT token secret (min 32 chars)
-- `JWT_REFRESH_SECRET`: JWT refresh token secret (min 32 chars)
-- `SESSION_SECRET`: Session cookie secret (min 32 chars)
-
-### Optional Features
-- **Story Mode** (`FEATURE_STORY_MODE=true`): Works without Redis using synchronous ElevenLabs synthesis. Redis+S3 only needed for background job processing.
-- **Stripe Billing**: Requires `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`
-- **OpenAI**: Requires `OPENAI_API_KEY`
-- **Email**: Requires SMTP configuration
-
-## Database Setup
-The PostgreSQL database includes:
-- 16 core tables (users, videos, stories, voice_profiles, etc.)
-- 1 template_videos table (created dynamically on first run)
-- 4 enum types (story_category, story_rights_status, story_job_status, tts_provider)
-
-### Database Schema Management
-- Uses Drizzle ORM with dual support for SQLite (dev) and PostgreSQL (production)
-- Migration files in `server/db/migrations/`
-- Schema defined in `shared/schema.ts` (PostgreSQL) and `shared/schema-sqlite.ts` (SQLite)
-
-### PostgreSQL Compatibility
-The codebase includes helper functions for database operations that work with both SQLite and PostgreSQL:
-- `dbQuery()` - Returns array of rows (replaces db.all for SQLite)
-- `dbQueryOne()` - Returns single row (replaces db.get for SQLite)
-- `dbRun()` - Executes statement (replaces db.run for SQLite)
-
-## Development Workflow
-
-### Running the App
-```bash
-npm run dev
-```
-This starts the integrated server on port 5000 with:
-- Express backend API
-- Vite dev server for React frontend
-- Hot module replacement (HMR)
-
-### Database Operations
-```bash
-npm run db:push       # Push schema changes to database
-npm run db:generate   # Generate migration files
-npm run db:migrate    # Run migrations
-```
-
-## Deployment Configuration
-- **Type**: Autoscale (stateless)
-- **Build**: `npm run build`
-- **Run**: `npm start`
-- **Port**: 5000
-
-## Important Notes
-
-### Proxy Configuration
-The Vite dev server is configured with `allowedHosts: true` in `server/vite.ts` to work with Replit's proxy system. The application is accessed through Replit's webview iframe.
-
-### Database Support
-The application supports both SQLite (file-based) and PostgreSQL. The database type is detected automatically based on the `DATABASE_URL` format:
-- SQLite: `file:./famflix.db`
-- PostgreSQL: `postgresql://...`
-
-### Voice Cloning Providers
-The application supports multiple TTS providers:
-- **ElevenLabs** (Default): Real AI voice cloning via ElevenLabs API - requires `ELEVENLABS_API_KEY`
-- **F5**: Local provider for speech synthesis (requires GPU server)
-- **RVC**: Used for singing/vocal cloning (requires GPU server)
-- Provider can be configured via the `TTS_PROVIDER` env var
-
-### Known Warnings
-- **GPU/Ollama Warnings**: Expected in cloud environment, app falls back to simulation mode
-- **Stripe Warnings**: Expected when Stripe keys are not configured
-- **Redis Warnings**: Only shown when FEATURE_STORY_MODE is enabled without Redis
-
-## File Structure
-```
-.
-├── client/          # React frontend
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── hooks/
-│   │   └── lib/
-│   └── index.html
-├── server/          # Express backend
-│   ├── db/          # Database migrations and schema
-│   ├── routes/      # API routes
-│   ├── services/    # Business logic
-│   ├── queues/      # Background job queues (Redis-based)
-│   ├── workers/     # Background workers
-│   └── middleware/  # Auth, security, rate limiting
-├── shared/          # Shared types and schemas
-└── scripts/         # Utility scripts
-```
-
-## Subscription Tiers
-
-### Plans and Pricing
-- **Free** ($0/month): 2 videos, 2 stories, 1 voice clone, shows ads
-- **Premium** ($20/month): 5 videos, 5 stories, 2 voice clones, no ads
-- **Pro** ($40/month): Unlimited videos, unlimited stories, 5 voice clones, no ads
-
-### Usage Tracking
-- Monthly usage tracked in `usage_tracking` table
-- Limits reset at the start of each calendar month
-- Video count increments when project is created
-- Story count increments when narration starts (not on re-reads)
-- Voice clone limit is total per account (not monthly)
-
-### Key Files
-- `shared/subscriptions.ts` - Plan definitions and limits
-- `server/services/usageService.ts` - Usage tracking and limit enforcement
-- `server/services/billingService.ts` - Stripe integration
-- `client/src/lib/pricing.ts` - Frontend plan display
-- `client/src/components/AdBanner.tsx` - Ad component for free users
-- `client/src/components/UsageSummary.tsx` - Usage display component
-- `client/src/hooks/useUsage.ts` - Usage data hook
-
-### Stripe Integration
-Requires these environment variables for paid upgrades:
-- `STRIPE_SECRET_KEY` - Stripe API secret key
-- `STRIPE_PUBLISHABLE_KEY` - Stripe publishable key (for frontend)
-- `STRIPE_WEBHOOK_SECRET` - For processing payment events
-
-## Recent Changes
-
-### 2025-12-01: Subscription Tiers Implementation
-- Added three subscription tiers: Free ($0), Premium ($20), Pro ($40)
-- Created usage tracking table for monthly video/story counts
-- Implemented limit enforcement on video creation and story narration
-- Added `/api/usage` endpoint for retrieving usage status
-- Created AdBanner component showing upgrade prompts for free users
-- Created UsageSummary component showing usage progress
-- Updated Pricing page with plan comparison and Stripe checkout
-- Voice clone limits enforced at profile creation
-
-### 2025-11-30: Enhanced Voice Cloning with Noise Suppression
-- Completely redesigned voice cloning with 5-step guided wizard:
-  - Step 1 (Intro): Name your voice + feature highlights
-  - Step 2 (Environment): Microphone check with real-time noise level detection
-  - Step 3 (Record): Guided recording with sample scripts to read
-  - Step 4 (Review): Listen and verify recording quality
-  - Step 5 (Create): Final confirmation and voice clone creation
-- Built-in browser noise suppression using Web Audio API constraints:
-  - `noiseSuppression: true` - Removes background noise
-  - `echoCancellation: true` - Eliminates echo
-  - `autoGainControl: true` - Normalizes volume levels
-- Real-time audio visualization with waveform display
-- Noise level indicator (Low/Medium/High) with visual feedback
-- Sample scripts provided for consistent voice capture:
-  - Natural Greeting, Short Story, Emotional Range options
-- Quality tips and environment setup guidance
-- Progress indicator showing current step
-- Accessible buttons with aria-labels throughout
-
-### 2025-11-29: Background Audio Preservation
-- Added `preserveBackground` option to video processing pipeline
-- When enabled, original audio is ducked (reduced volume) during speech segments
-- New synthesized voice is mixed with the ducked original audio
-- Background music and ambient sounds are preserved while replacing only the voice
-- Uses ffmpeg volume filter with dynamic ducking (-12dB during speech)
-- Frontend toggle in Project Setup page (default: enabled)
-- API accepts `preserveBackground` and `backgroundDuckLevel` parameters
-
-### 2025-11-29: Transcript Editing
-- Added PATCH `/api/template-videos/:id/transcript` endpoint for admin editing
-- Robust validation: non-empty segments, finite numbers, min 0.05s duration, no overlaps, non-empty text
-- Edits preserve segment timing (start/end) for voice cloning synchronization
-- Persists `transcriptSource: 'admin_edited'`, `editedAt`, `editedBy` metadata
-- Sets `pipelineStatus: 'needs_regeneration'` to flag videos for re-processing
-- Admin UI shows "Edit" button, editable text areas per segment, Save/Cancel
-- Warning banner when transcript needs regeneration
-
-### 2025-11-29: Segment-by-Segment Audio Sync
-- Implemented proper audio synchronization using segment-by-segment ElevenLabs synthesis
-- Each transcript segment is synthesized individually, then time-stretched to match original timing
-- Added `timeStretchAudio()` function using ffmpeg's atempo filter (handles ratios outside 0.5-2.0)
-- Added `generateSilence()` and `concatenateAudioFiles()` helpers for audio processing
-- Gaps between segments are preserved with silence
-- Fallback to full-text synthesis if no segments available
-
-### 2025-11-29: Admin Transcript Viewer
-- Added transcript viewer in Admin Video Catalog (`/admin/videos`)
-- Shows Gemini AI transcription with timestamps
-- Timeline view shows each segment with start/end timestamps
-- Full text view shows complete transcript
-- Displays metadata: source (Gemini AI or Edited), duration, segment count, timestamps
-- GET endpoint: `GET /api/template-videos/:id/transcript` returns transcript with segments
-- POST endpoint generates new transcript, PATCH endpoint saves edits
-
-### 2025-11-29: Advertising Code Removal
-- Completely removed AdBanner component and all ad-related code
-- Removed `/api/ads/preferences` endpoints and schemas from backend
-- Cleaned up Dashboard, VideoLibrary, Stories, and VideoSelectionCatalog pages
-- Created test story "The Magical Forest Adventure" with 4 sections for testing
-
-### 2025-11-29: Audio Content-Type Fix
-- Fixed "Preview playback failed" error that appeared even when audio played successfully
-- Audio endpoint now detects file extension and sets correct Content-Type header
-- MP3 files from ElevenLabs now served with `audio/mpeg` instead of `audio/wav`
-
-### 2025-11-29: ElevenLabs Voice Cloning Integration
-- Added real AI voice cloning via ElevenLabs Instant Voice Cloning (IVC) API
-- Created ElevenLabsProvider (`server/tts/providers/elevenlabs.ts`) for:
-  - Creating voice clones from audio samples
-  - Text-to-speech synthesis with cloned voices
-  - Voice management (list, delete)
-- Updated voice preview in `server/routes-simple.ts` to auto-migrate F5 profiles to ElevenLabs
-- Added migration endpoint: `POST /api/voice-profiles/:id/migrate-to-elevenlabs`
-- Voice preview now uses real ElevenLabs TTS instead of simulation
-- **Note**: Requires valid `ELEVENLABS_API_KEY` secret to be set
-
-### 2025-11-29: Voice Cloning Fixes
-- Installed ffmpeg system dependency for audio format conversion (WebM to WAV)
-- Added missing `provider` column to voice_profiles table
-- Updated F5Provider with simulation mode for development without GPU server:
-  - `server/tts/providers/f5.ts` - Falls back gracefully when GPU server unavailable
-  - Uses voice sample as preview in simulation mode
-- Voice cloning workflow now works end-to-end in Replit environment
-
-### 2025-11-29: Video Processing Pipeline with Gemini + ElevenLabs
-- Added Gemini AI integration for video transcription (`server/services/transcriptionService.ts`)
-  - Extracts audio from video using ffmpeg
-  - Uses Gemini 2.5 Flash to transcribe audio to text
-  - Supports chunking for large files (>8MB limit)
-  - Built-in rate limiting and retries
-- Updated video processing pipeline to use real AI services:
-  - First transcribes the video using Gemini AI if no existing transcript
-  - Then uses ElevenLabs to synthesize speech with the cloned voice
-  - Finally replaces the original audio with the new synthesized audio using ffmpeg
-- Processing stages: starting → transcribing → transcript_ready → tts_synthesis → completed
-- Uses Replit AI Integrations (billed to credits, no separate API key needed for Gemini)
-
-### 2025-11-29: Replit Environment Setup Complete
-- Configured PostgreSQL database with all required tables and enums
-- Fixed SQLite-to-PostgreSQL compatibility in route handlers:
-  - `server/routes/templateVideos.ts` - Added dbQuery/dbQueryOne/dbRun helpers
-  - `server/routes/admin.ts` - Added dbQuery/dbQueryOne/dbRun helpers
-  - `server/utils/templateVideos.ts` - Added db.execute() for PostgreSQL
-- Made Redis connections conditional (only when FEATURE_STORY_MODE enabled):
-  - `server/queues/connection.ts` - Lazy Redis connection
-  - `server/queues/storyQueue.ts` - Null-safe queue creation
-  - `server/workers/storyWorker.ts` - Null-safe worker creation
-- Updated default TTS provider from CHATTERBOX to F5 in schema files
-- Configured Vite with `allowedHosts: true` for Replit proxy
-- Set up development workflow on port 5000
-- Configured deployment as autoscale
+- **Voice Cloning/TTS Providers**:
+    - ElevenLabs API (requires `ELEVENLABS_API_KEY`)
+    - F5 (local provider, requires GPU server)
+    - RVC (for singing/vocal cloning, requires GPU server)
+- **AI Services**:
+    - Gemini AI (for video transcription, uses Replit AI Integrations)
+    - OpenAI (optional, requires `OPENAI_API_KEY`)
+- **Payment Processing**: Stripe (requires `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`)
+- **Email**: SMTP (for email configurations)
+- **Queues**: Redis (optional, for `FEATURE_STORY_MODE`)
+- **Cloud Storage**: S3 (optional, for `FEATURE_STORY_MODE`)
+- **Utilities**: FFmpeg (system dependency for audio/video processing)
