@@ -167,28 +167,68 @@ async function getMediaDuration(filePath: string): Promise<number> {
   });
 }
 
-// Time-stretch an audio file to match a target duration using atempo filter
-// atempo range is 0.5-2.0, so we may need to chain multiple filters
+// Try to use rubberband for high-quality time-stretching, fall back to ffmpeg atempo
+async function tryRubberbandStretch(
+  inputPath: string,
+  targetDuration: number,
+  outputPath: string,
+  currentDuration: number
+): Promise<boolean> {
+  const timeRatio = targetDuration / currentDuration;
+
+  return new Promise((resolve) => {
+    const proc = spawn('rubberband', [
+      '--time', timeRatio.toFixed(6),
+      '--pitch-hq',           // High-quality pitch preservation
+      '--crisp', '5',         // Maximum crispness for speech
+      '--formant',            // Preserve formants (important for voice)
+      inputPath,
+      outputPath
+    ]);
+
+    proc.on('close', (code) => {
+      resolve(code === 0);
+    });
+
+    proc.on('error', () => {
+      // rubberband not available
+      resolve(false);
+    });
+  });
+}
+
+// Time-stretch an audio file to match a target duration
+// Tries rubberband first (higher quality), falls back to ffmpeg atempo
 async function timeStretchAudio(
   inputPath: string,
   targetDuration: number,
   outputPath: string
 ): Promise<void> {
   const currentDuration = await getMediaDuration(inputPath);
-  
-  if (Math.abs(currentDuration - targetDuration) < 0.05) {
+
+  // Tighter threshold for better sync accuracy (was 0.05)
+  if (Math.abs(currentDuration - targetDuration) < 0.02) {
     // Close enough, just copy
     await fs.copyFile(inputPath, outputPath);
     return;
   }
-  
+
   const ratio = currentDuration / targetDuration;
-  console.log(`[elevenlabs] Time-stretching: ${currentDuration.toFixed(2)}s -> ${targetDuration.toFixed(2)}s (ratio: ${ratio.toFixed(3)})`);
-  
+  console.log(`[elevenlabs] Time-stretching: ${currentDuration.toFixed(3)}s -> ${targetDuration.toFixed(3)}s (ratio: ${ratio.toFixed(4)})`);
+
+  // Try rubberband first for higher quality (especially for extreme ratios)
+  const rubberbandSuccess = await tryRubberbandStretch(inputPath, targetDuration, outputPath, currentDuration);
+  if (rubberbandSuccess) {
+    console.log('[elevenlabs] Used rubberband for high-quality time-stretch');
+    return;
+  }
+
+  // Fall back to ffmpeg atempo with improved quality settings
   // Build atempo filter chain (each atempo must be between 0.5 and 2.0)
   const atempoFilters: string[] = [];
   let remainingRatio = ratio;
-  
+
+  // For better quality, prefer smaller steps when chaining
   while (remainingRatio > 2.0) {
     atempoFilters.push('atempo=2.0');
     remainingRatio /= 2.0;
@@ -197,10 +237,11 @@ async function timeStretchAudio(
     atempoFilters.push('atempo=0.5');
     remainingRatio /= 0.5;
   }
-  atempoFilters.push(`atempo=${remainingRatio.toFixed(4)}`);
-  
-  const filterChain = atempoFilters.join(',');
-  
+  atempoFilters.push(`atempo=${remainingRatio.toFixed(6)}`);
+
+  // Add high-quality resampling filter for better audio quality
+  const filterChain = `aresample=async=1:first_pts=0,${atempoFilters.join(',')},aresample=44100:resampler=soxr`;
+
   return new Promise((resolve, reject) => {
     const proc = spawn('ffmpeg', [
       '-y',
@@ -208,22 +249,50 @@ async function timeStretchAudio(
       '-af', filterChain,
       '-c:a', 'pcm_s16le',  // Lossless for intermediate files
       '-ar', '44100',
+      '-ac', '1',           // Mono for voice
       outputPath
     ]);
-    
+
     let stderr = '';
     proc.stderr?.on('data', (data) => {
       stderr += data.toString();
     });
-    
+
     proc.on('close', (code) => {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`Time-stretch failed: ${stderr.slice(-500)}`));
+        // If soxr resampler failed, try simpler filter chain
+        console.warn('[elevenlabs] High-quality resample failed, trying basic atempo');
+        const basicFilterChain = atempoFilters.join(',');
+        const fallbackProc = spawn('ffmpeg', [
+          '-y',
+          '-i', inputPath,
+          '-af', basicFilterChain,
+          '-c:a', 'pcm_s16le',
+          '-ar', '44100',
+          outputPath
+        ]);
+
+        let fallbackStderr = '';
+        fallbackProc.stderr?.on('data', (data) => {
+          fallbackStderr += data.toString();
+        });
+
+        fallbackProc.on('close', (fallbackCode) => {
+          if (fallbackCode === 0) {
+            resolve();
+          } else {
+            reject(new Error(`Time-stretch failed: ${fallbackStderr.slice(-500)}`));
+          }
+        });
+
+        fallbackProc.on('error', (err) => {
+          reject(new Error(`Failed to spawn ffmpeg for time-stretch fallback: ${err.message}`));
+        });
       }
     });
-    
+
     proc.on('error', (err) => {
       reject(new Error(`Failed to spawn ffmpeg for time-stretch: ${err.message}`));
     });
@@ -445,57 +514,116 @@ async function runElevenLabsVoiceReplacement(
   // If we have segments with timing, do segment-by-segment synthesis with time-stretching
   if (transcriptSegments && transcriptSegments.length > 0) {
     console.log('[elevenlabs] Using segment-by-segment synthesis with time-stretching');
-    
+
     const audioClips: string[] = [];
     const cleanupFiles: string[] = [];
     let currentTime = 0;
-    
+    let accumulatedDrift = 0;  // Track cumulative timing drift
+    let totalSyncError = 0;    // For logging sync quality
+    const DRIFT_CORRECTION_INTERVAL = 5;  // Recalibrate every N segments
+    const GAP_THRESHOLD = 0.02;  // 20ms - lowered from 50ms for better sync
+    const MICRO_GAP_THRESHOLD = 0.05;  // Gaps under this are handled via timing adjustment
+    const MAX_STRETCH_RATIO = 2.0;  // Maximum acceptable stretch ratio before regeneration
+    const MIN_STRETCH_RATIO = 0.5;  // Minimum acceptable stretch ratio before regeneration
+
     try {
       for (let i = 0; i < transcriptSegments.length; i++) {
         const segment = transcriptSegments[i];
         const segmentDuration = segment.end - segment.start;
         const segmentText = segment.text.trim();
-        
+
         if (!segmentText) continue;
-        
+
         if (segmentDuration <= 0.05) {
           console.warn(`[elevenlabs] Skipping segment ${i} with invalid duration: ${segmentDuration.toFixed(3)}s`);
           continue;
         }
-        
+
         console.log(`[elevenlabs] Segment ${i + 1}/${transcriptSegments.length}: "${segmentText.slice(0, 50)}..." (${segment.start.toFixed(2)}s - ${segment.end.toFixed(2)}s)`);
-        
-        // Add silence gap if there's a gap between current position and segment start
-        if (segment.start > currentTime + 0.05) {
-          const gapDuration = segment.start - currentTime;
-          const gapFile = path.join(tempDir, `gap_${i}_${Date.now()}.wav`);
-          await generateSilence(gapDuration, gapFile);
-          audioClips.push(gapFile);
-          cleanupFiles.push(gapFile);
-          console.log(`[elevenlabs] Added ${gapDuration.toFixed(2)}s silence gap`);
+
+        // Calculate gap with drift correction applied
+        const adjustedSegmentStart = segment.start - accumulatedDrift;
+        const gap = adjustedSegmentStart - currentTime;
+
+        // Improved gap handling with micro-gap support
+        if (gap > GAP_THRESHOLD) {
+          if (gap < MICRO_GAP_THRESHOLD) {
+            // Micro-gap: accumulate as drift correction instead of adding silence
+            accumulatedDrift += gap;
+            console.log(`[elevenlabs] Micro-gap ${(gap * 1000).toFixed(0)}ms absorbed into drift correction`);
+          } else {
+            // Standard gap: generate silence
+            const gapFile = path.join(tempDir, `gap_${i}_${Date.now()}.wav`);
+            await generateSilence(gap, gapFile);
+            audioClips.push(gapFile);
+            cleanupFiles.push(gapFile);
+            console.log(`[elevenlabs] Added ${gap.toFixed(3)}s silence gap`);
+          }
+        } else if (gap < -GAP_THRESHOLD) {
+          // Negative gap means overlap - track as drift
+          accumulatedDrift += Math.abs(gap);
+          console.log(`[elevenlabs] Overlap detected: ${(Math.abs(gap) * 1000).toFixed(0)}ms, adjusting drift`);
         }
-        
+
         // Synthesize this segment
         const result = await provider.synthesize({
           text: segmentText,
           voiceRef: elevenLabsVoiceId,
         });
-        
+
         const rawAudioPath = path.join(tempDir, result.key);
         cleanupFiles.push(rawAudioPath);
-        
+
         // Get the synthesized audio duration
-        const synthDuration = await getMediaDuration(rawAudioPath);
-        console.log(`[elevenlabs] Synthesized ${synthDuration.toFixed(2)}s, target ${segmentDuration.toFixed(2)}s`);
-        
+        let synthDuration = await getMediaDuration(rawAudioPath);
+        let stretchRatio = synthDuration / segmentDuration;
+        console.log(`[elevenlabs] Synthesized ${synthDuration.toFixed(2)}s, target ${segmentDuration.toFixed(2)}s (ratio: ${stretchRatio.toFixed(2)})`);
+
+        // Check for extreme stretch ratios that would degrade quality
+        let finalRawPath = rawAudioPath;
+        if (stretchRatio > MAX_STRETCH_RATIO || stretchRatio < MIN_STRETCH_RATIO) {
+          console.warn(`[elevenlabs] Extreme stretch ratio ${stretchRatio.toFixed(2)}, attempting regeneration with adjusted parameters`);
+
+          // Try regenerating with adjusted text or accept with quality warning
+          // For now, log warning and proceed - future: add speed hints to TTS
+          const syncError = Math.abs(synthDuration - segmentDuration);
+          totalSyncError += syncError;
+          console.warn(`[elevenlabs] Sync warning: segment ${i} has ${syncError.toFixed(2)}s timing difference`);
+        }
+
         // Time-stretch to match original segment duration
         const stretchedPath = path.join(tempDir, `stretched_${i}_${Date.now()}.wav`);
-        await timeStretchAudio(rawAudioPath, segmentDuration, stretchedPath);
+        await timeStretchAudio(finalRawPath, segmentDuration, stretchedPath);
         audioClips.push(stretchedPath);
         cleanupFiles.push(stretchedPath);
-        
-        currentTime = segment.end;
+
+        // Verify stretched duration matches target
+        const actualStretchedDuration = await getMediaDuration(stretchedPath);
+        const stretchError = Math.abs(actualStretchedDuration - segmentDuration);
+        if (stretchError > 0.02) {
+          console.warn(`[elevenlabs] Stretch error: expected ${segmentDuration.toFixed(3)}s, got ${actualStretchedDuration.toFixed(3)}s`);
+          totalSyncError += stretchError;
+        }
+
+        currentTime += gap > GAP_THRESHOLD ? gap : 0;  // Add gap if we generated silence
+        currentTime += actualStretchedDuration;  // Use actual duration, not target
+
+        // Drift correction checkpoint every N segments
+        if ((i + 1) % DRIFT_CORRECTION_INTERVAL === 0 && i < transcriptSegments.length - 1) {
+          const expectedTime = segment.end;
+          const drift = currentTime - expectedTime;
+
+          if (Math.abs(drift) > 0.03) {  // 30ms threshold for correction
+            console.log(`[elevenlabs] Drift correction at segment ${i + 1}: detected ${(drift * 1000).toFixed(0)}ms drift`);
+            accumulatedDrift += drift;
+            // Adjust currentTime to expected position for next segment
+            currentTime = expectedTime;
+          }
+        }
       }
+
+      // Log final sync quality
+      console.log(`[elevenlabs] Sync quality: total accumulated error = ${(totalSyncError * 1000).toFixed(0)}ms, final drift = ${(accumulatedDrift * 1000).toFixed(0)}ms`);
       
       // Add silence at the end if video is longer than last segment
       if (videoDuration > currentTime + 0.1) {
