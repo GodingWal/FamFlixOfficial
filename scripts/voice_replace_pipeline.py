@@ -524,7 +524,7 @@ def stretch_segment(input_path: Path, output_path: Path, target_duration: float)
 
 
 def assemble_segments(segments: Iterable[GeneratedSegment], output_path: Path) -> None:
-    """Overlay the generated dialogue segments into a single audio track with gap filling."""
+    """Overlay the generated dialogue segments into a single audio track with gap filling and drift correction."""
 
     ordered = sorted(segments, key=lambda seg: seg.transcript.start)
     if not ordered:
@@ -534,20 +534,64 @@ def assemble_segments(segments: Iterable[GeneratedSegment], output_path: Path) -
     total_duration_ms = int(math.ceil(ordered[-1].transcript.end * 1000)) + 1000  # +1s tail
     final_audio = AudioSegment.silent(duration=total_duration_ms)
 
+    # Sync improvement constants
+    GAP_THRESHOLD_MS = 20  # Lowered from 100ms for better sync
+    MICRO_GAP_THRESHOLD_MS = 50  # Gaps under this are absorbed
+    FADE_DURATION_MS = 20  # Reduced from 50ms to minimize perceptual shift
+    DRIFT_CORRECTION_INTERVAL = 5  # Recalibrate every N segments
+
     prev_end_ms = 0
-    for seg in ordered:
-        # Insert silence for gaps > 100ms
-        gap_start = prev_end_ms
-        gap_end = int(seg.transcript.start * 1000)
-        if gap_end - gap_start > 100:
-            silence = AudioSegment.silent(duration=gap_end - gap_start)
-            final_audio = final_audio.overlay(silence, position=gap_start)  # Explicit, though silent base
+    accumulated_drift_ms = 0
+    total_sync_error_ms = 0
+
+    for idx, seg in enumerate(ordered):
+        # Calculate gap with drift correction
+        target_start_ms = int(seg.transcript.start * 1000) - accumulated_drift_ms
+        gap_ms = target_start_ms - prev_end_ms
+
+        # Improved gap handling
+        if gap_ms > GAP_THRESHOLD_MS:
+            if gap_ms < MICRO_GAP_THRESHOLD_MS:
+                # Micro-gap: absorb into drift instead of adding silence
+                accumulated_drift_ms += gap_ms
+                logging.debug(f"Segment {idx}: Micro-gap {gap_ms}ms absorbed into drift")
+            else:
+                # Standard gap: silence is already in the base track
+                logging.debug(f"Segment {idx}: Gap of {gap_ms}ms")
+        elif gap_ms < -GAP_THRESHOLD_MS:
+            # Overlap detected - track as drift
+            accumulated_drift_ms += abs(gap_ms)
+            logging.warning(f"Segment {idx}: Overlap of {abs(gap_ms)}ms detected, adjusting drift")
 
         clip = AudioSegment.from_file(seg.audio_path, format="wav")
-        clip = clip.fade_in(50).fade_out(50)
-        position_ms = int(seg.transcript.start * 1000)
+
+        # Shorter fades to minimize sync impact
+        if len(clip) > FADE_DURATION_MS * 3:
+            clip = clip.fade_in(FADE_DURATION_MS).fade_out(FADE_DURATION_MS)
+
+        # Position with drift correction applied
+        position_ms = max(0, target_start_ms)
         final_audio = final_audio.overlay(clip, position=position_ms)
-        prev_end_ms = max(prev_end_ms, position_ms + len(clip))
+
+        # Track actual end position for sync validation
+        actual_end_ms = position_ms + len(clip)
+        expected_end_ms = int(seg.transcript.end * 1000)
+        sync_error = abs(actual_end_ms - expected_end_ms)
+        total_sync_error_ms += sync_error
+
+        if sync_error > 50:
+            logging.warning(f"Segment {idx}: Sync error of {sync_error}ms (expected end: {expected_end_ms}ms, actual: {actual_end_ms}ms)")
+
+        prev_end_ms = actual_end_ms
+
+        # Drift correction checkpoint
+        if (idx + 1) % DRIFT_CORRECTION_INTERVAL == 0 and idx < len(ordered) - 1:
+            drift = actual_end_ms - expected_end_ms
+            if abs(drift) > 30:  # 30ms threshold
+                logging.info(f"Drift correction at segment {idx + 1}: {drift}ms drift detected")
+                accumulated_drift_ms += drift
+
+    logging.info(f"Assembly complete: total sync error = {total_sync_error_ms}ms, final drift = {accumulated_drift_ms}ms")
 
     # Normalize with compression to avoid clipping
     final_audio = normalize(final_audio)
