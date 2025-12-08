@@ -6,15 +6,61 @@ import { nanoid } from "nanoid";
 import { spawn } from "child_process";
 import { config } from "../config";
 import { getTTSProvider, getElevenLabsProvider } from "../tts";
+import { logger } from "../utils/logger";
 
 export class VoiceService {
   private readonly audioStoragePath = path.resolve(process.cwd(), "uploads", "audio");
   private readonly tempDir = path.resolve(process.cwd(), "temp");
   private readonly defaultProvider = config.TTS_PROVIDER;
+  private readonly activeBuffers: Set<WeakRef<Buffer>> = new Set();
+  private cleanupInterval: NodeJS.Timeout | null = null;
 
   constructor() {
     // Ensure audio storage directory exists
     this.ensureStorageDirectory();
+    // Start periodic cleanup of temp files
+    this.startCleanupInterval();
+  }
+
+  private startCleanupInterval(): void {
+    // Clean up stale temp files every 30 minutes
+    this.cleanupInterval = setInterval(() => {
+      this.cleanupTempFiles().catch(err =>
+        logger.error('Failed to cleanup temp files', { error: err })
+      );
+    }, 30 * 60 * 1000);
+  }
+
+  private async cleanupTempFiles(): Promise<void> {
+    try {
+      const files = await fs.readdir(this.tempDir);
+      const now = Date.now();
+      const maxAge = 2 * 60 * 60 * 1000; // 2 hours
+
+      for (const file of files) {
+        const filePath = path.join(this.tempDir, file);
+        try {
+          const stats = await fs.stat(filePath);
+          if (now - stats.mtimeMs > maxAge) {
+            await fs.unlink(filePath);
+            logger.debug('Cleaned up stale temp file', { filePath });
+          }
+        } catch (err) {
+          // Ignore individual file errors
+        }
+      }
+    } catch (err) {
+      // Temp dir might not exist yet
+    }
+  }
+
+  shutdown(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    this.activeBuffers.clear();
+    logger.info('VoiceService shutdown complete');
   }
 
   // Decode arbitrary audio (MP3/OGG/M4A/WAV/etc.) into PCM WAV using ffmpeg via stdin/stdout
@@ -84,7 +130,7 @@ export class VoiceService {
         return workingBuffer;
       }
     } catch (error) {
-      console.error('Voice prompt preprocessing error:', error);
+      logger.error('Voice prompt preprocessing error', { error });
       return audioBuffer;
     }
   }
@@ -94,7 +140,7 @@ export class VoiceService {
       await fs.mkdir(this.audioStoragePath, { recursive: true });
       await fs.mkdir(this.tempDir, { recursive: true });
     } catch (error) {
-      console.error("Failed to create audio storage directory:", error);
+      logger.error("Failed to create audio storage directory", { error });
     }
   }
 
@@ -102,9 +148,9 @@ export class VoiceService {
     return this.createVoiceCloneFromFiles([audioFile], name, userId, familyId);
   }
 
-  async createVoiceCloneFromFiles(audioFiles: Buffer[], name: string, userId: string, familyId?: string, recordingMetadata?: any[]): Promise<string> {
+  async createVoiceCloneFromFiles(audioFiles: Buffer[], name: string, userId: string, familyId?: string, recordingMetadata?: unknown[]): Promise<string> {
     try {
-      console.log(`Creating voice clone for ${name} with ${audioFiles.length} audio files...`);
+      logger.info(`Creating voice clone`, { name, audioFileCount: audioFiles.length });
 
       const metaList = Array.isArray(recordingMetadata) ? recordingMetadata : [];
 
@@ -122,7 +168,7 @@ export class VoiceService {
           if (duration === undefined && analysisBuffer.length > 0) {
             const info = await this.analyzeAudioBuffer(analysisBuffer);
             duration = info.duration;
-            console.log(`[voice] analyzed input #${i}: ${info.format} ${info.channels}ch @ ${info.sampleRate}Hz, ${info.bitDepth}bit, duration=${duration?.toFixed?.(2) ?? duration}s`);
+            logger.debug(`VoiceService: analyzed input #${i}`, { format: info.format, channels: info.channels, sampleRate: info.sampleRate, bitDepth: info.bitDepth, duration: duration?.toFixed?.(2) });
           }
         } catch {
           // If analysis fails, duration remains undefined
@@ -131,7 +177,7 @@ export class VoiceService {
         if (!Number.isFinite(duration as number)) {
           const est = Math.max(0, Math.round((originalBuffer.length / 96000) * 100) / 100);
           duration = est;
-          console.warn(`[voice] duration analysis failed for input #${i}; using size-based estimate ~${est}s from ${originalBuffer.length} bytes`);
+          logger.warn(`VoiceService: duration analysis failed for input #${i}; using size-based estimate`, { estimatedDuration: est, bytes: originalBuffer.length });
         }
 
         augmentedFiles.push({ buffer: originalBuffer, metadata, duration: Number(duration) });
@@ -164,7 +210,7 @@ export class VoiceService {
       let provider: string;
 
       if (elevenLabs.isConfigured()) {
-        console.log(`[voice] Using ElevenLabs for voice cloning...`);
+        logger.info('VoiceService: Using ElevenLabs for voice cloning');
         provider = "ELEVENLABS";
         
         try {
@@ -174,13 +220,14 @@ export class VoiceService {
             `Voice clone for ${name} - Created via FamFlix`
           );
           providerRef = voiceId;
-          console.log(`[voice] ElevenLabs voice created: ${voiceId}`);
-        } catch (error: any) {
-          console.error("[voice] ElevenLabs cloning failed:", error);
-          throw new Error(`Voice cloning failed: ${error.message}`);
+          logger.info('VoiceService: ElevenLabs voice created', { voiceId });
+        } catch (error: unknown) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error("VoiceService: ElevenLabs cloning failed", { error: errorMessage });
+          throw new Error(`Voice cloning failed: ${errorMessage}`);
         }
       } else {
-        console.log(`[voice] ElevenLabs not configured, storing local audio prompt...`);
+        logger.info('VoiceService: ElevenLabs not configured, storing local audio prompt');
         provider = this.defaultProvider;
         
         const promptBuffer = processedRecordings.length > 1
@@ -216,11 +263,12 @@ export class VoiceService {
         },
       } as InsertVoiceProfile);
 
-      console.log(`Voice profile created: ${voiceProfile.id} with provider=${provider}`);
+      logger.info('Voice profile created', { profileId: voiceProfile.id, provider });
       return voiceProfile.id;
-    } catch (error: any) {
-      console.error("Voice cloning error:", error);
-      throw new Error(`Voice cloning failed: ${error.message || 'Unknown error occurred'}. Please try again.`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      logger.error("Voice cloning error", { error: errorMessage });
+      throw new Error(`Voice cloning failed: ${errorMessage}. Please try again.`);
     }
   }
 
@@ -370,9 +418,10 @@ export class VoiceService {
       return buffer;
     }
 
-    console.log(
-      `Converting audio: ${audioInfo.sampleRate}Hz → ${targetSampleRate}Hz, ${audioInfo.channels}ch → ${normalizedChannels}ch, ${audioInfo.bitDepth}bit → ${normalizedBitDepth}bit`,
-    );
+    logger.debug('VoiceService: Converting audio format', {
+      from: { sampleRate: audioInfo.sampleRate, channels: audioInfo.channels, bitDepth: audioInfo.bitDepth },
+      to: { sampleRate: targetSampleRate, channels: normalizedChannels, bitDepth: normalizedBitDepth }
+    });
 
     const dataStart = (audioInfo as any).dataOffset ?? 44;
     const dataEnd = dataStart + ((audioInfo as any).dataSize ?? Math.max(0, buffer.length - dataStart));
@@ -566,7 +615,7 @@ export class VoiceService {
 
       return this.createWavBuffer(filteredSamples, audioInfo.sampleRate, audioInfo.channels, audioInfo.bitDepth);
     } catch (error) {
-      console.error('Audio enhancement error:', error);
+      logger.error('Audio enhancement error', { error });
       return audioBuffer; // Return original if enhancement fails
     }
   }
@@ -661,7 +710,7 @@ export class VoiceService {
       throw new Error('No audio buffers provided for combination');
     }
 
-    console.log(`Combining ${audioBuffers.length} processed recordings into a single training file`);
+    logger.info('VoiceService: Combining processed recordings', { count: audioBuffers.length });
 
     const sampleSegments: number[][] = [];
     let referenceInfo = await this.analyzeAudioBuffer(audioBuffers[0]);
@@ -798,10 +847,9 @@ export class VoiceService {
       });
 
       return generation.id;
-    } catch (error: any) {
-      console.error("Speech generation error:", error);
-
+    } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : "Speech generation failed";
+      logger.error("Speech generation error", { error: errorMessage });
 
       await storage.updateVoiceGeneration(generation.id, {
         status: "failed",

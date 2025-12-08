@@ -9,6 +9,7 @@ import { promisify } from "util";
 import pLimit from "p-limit";
 // @ts-ignore
 import pRetry from "p-retry";
+import { logger } from "../utils/logger";
 
 const execPromise = promisify(exec);
 
@@ -170,9 +171,9 @@ export class TranscriptionService {
           baseUrl,
         },
       });
-      console.log('[TranscriptionService] Initialized with Gemini AI integration');
+      logger.info('TranscriptionService initialized with Gemini AI integration');
     } else {
-      console.warn('[TranscriptionService] Gemini AI integration not configured. Transcription will not be available.');
+      logger.warn('TranscriptionService: Gemini AI integration not configured. Transcription will not be available.');
     }
   }
 
@@ -186,7 +187,7 @@ export class TranscriptionService {
       throw new Error('Transcription service is not configured. Gemini AI integration required.');
     }
 
-    console.log('[TranscriptionService] Starting transcription for:', videoPath);
+    logger.info('TranscriptionService: Starting transcription', { videoPath });
 
     // Create temp directory for audio extraction
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'transcribe-'));
@@ -194,17 +195,17 @@ export class TranscriptionService {
 
     try {
       // Extract audio from video
-      console.log('[TranscriptionService] Extracting audio...');
+      logger.debug('TranscriptionService: Extracting audio...');
       await extractAudio(videoPath, audioPath);
 
       // Get total duration
       const duration = await getMediaDuration(audioPath);
-      console.log('[TranscriptionService] Audio duration:', duration, 'seconds');
+      logger.debug('TranscriptionService: Audio duration', { duration: `${duration}s` });
 
       // Chunk audio if needed
-      console.log('[TranscriptionService] Chunking audio...');
+      logger.debug('TranscriptionService: Chunking audio...');
       const chunks = await chunkAudio(audioPath);
-      console.log('[TranscriptionService] Processing', chunks.length, 'chunk(s)');
+      logger.info('TranscriptionService: Processing chunks', { count: chunks.length });
 
       // Process chunks with rate limiting and retries
       const limit = pLimit(2); // Process up to 2 chunks concurrently
@@ -215,7 +216,7 @@ export class TranscriptionService {
           pRetry(
             async () => {
               try {
-                console.log(`[TranscriptionService] Processing chunk ${i + 1}/${chunks.length}`);
+                logger.debug(`TranscriptionService: Processing chunk ${i + 1}/${chunks.length}`);
 
                 const prompt = `Transcribe this audio completely and accurately. 
 Return ONLY the spoken words as plain text, with no extra commentary or formatting.
@@ -239,12 +240,12 @@ Do not add timestamps or speaker labels.`;
                 });
 
                 const responseText = response.text || "";
-                console.log(`[TranscriptionService] Chunk ${i + 1} transcribed:`, responseText.slice(0, 100) + '...');
+                logger.debug(`TranscriptionService: Chunk ${i + 1} transcribed`, { preview: responseText.slice(0, 100) });
 
                 return parseTranscriptResponse(responseText, chunk.startTime, chunk.endTime);
-              } catch (error: any) {
+              } catch (error: unknown) {
                 if (isRateLimitError(error)) {
-                  console.log(`[TranscriptionService] Rate limited on chunk ${i + 1}, retrying...`);
+                  logger.warn(`TranscriptionService: Rate limited on chunk ${i + 1}, retrying...`);
                   throw error;
                 }
                 throw new pRetry.AbortError(error);
@@ -271,7 +272,7 @@ Do not add timestamps or speaker labels.`;
       // Combine into full text
       const fullText = allSegments.map(s => s.text).join(' ');
 
-      console.log('[TranscriptionService] Transcription complete:', fullText.length, 'characters');
+      logger.info('TranscriptionService: Transcription complete', { characters: fullText.length });
 
       return {
         segments: allSegments,
@@ -297,7 +298,7 @@ Do not add timestamps or speaker labels.`;
       throw new Error('Transcription service is not configured. Gemini AI integration required.');
     }
 
-    console.log('[TranscriptionService] Starting audio transcription for:', audioPath);
+    logger.info('TranscriptionService: Starting audio transcription', { audioPath });
 
     const duration = await getMediaDuration(audioPath);
     const chunks = await chunkAudio(audioPath);
