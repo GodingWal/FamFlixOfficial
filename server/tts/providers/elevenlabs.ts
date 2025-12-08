@@ -34,10 +34,10 @@ export class ElevenLabsProvider implements ITTSProvider {
         form.append("remove_background_noise", "true");
 
         for (const filePath of audioFiles) {
-            const absPath = path.isAbsolute(filePath) 
-                ? filePath 
+            const absPath = path.isAbsolute(filePath)
+                ? filePath
                 : path.resolve(process.cwd(), filePath);
-            
+
             if (!fs.existsSync(absPath)) {
                 throw new Error(`Audio file not found: ${absPath}`);
             }
@@ -61,9 +61,9 @@ export class ElevenLabsProvider implements ITTSProvider {
             return response.data.voice_id;
         } catch (error: any) {
             if (axios.isAxiosError(error)) {
-                const message = error.response?.data?.detail?.message || 
-                               error.response?.data?.message ||
-                               error.message;
+                const message = error.response?.data?.detail?.message ||
+                    error.response?.data?.message ||
+                    error.message;
                 throw new Error(`ElevenLabs voice cloning failed: ${message}`);
             }
             throw error;
@@ -93,7 +93,7 @@ export class ElevenLabsProvider implements ITTSProvider {
         }
 
         const modelId = (metadata?.modelId as string) || "eleven_multilingual_v2";
-        
+
         const tempDir = path.resolve(process.cwd(), "temp");
         await fsp.mkdir(tempDir, { recursive: true });
 
@@ -118,7 +118,12 @@ export class ElevenLabsProvider implements ITTSProvider {
                 {
                     text,
                     model_id: modelId,
-                    voice_settings: voiceSettings,
+                    voice_settings: {
+                        stability: (metadata?.voiceSettings as any)?.stability ?? 0.5,
+                        similarity_boost: (metadata?.voiceSettings as any)?.similarity_boost ?? 0.75,
+                        style: (metadata?.voiceSettings as any)?.style ?? 0.0,
+                        use_speaker_boost: (metadata?.voiceSettings as any)?.use_speaker_boost ?? true,
+                    },
                 },
                 {
                     headers: {
@@ -146,10 +151,10 @@ export class ElevenLabsProvider implements ITTSProvider {
             };
         } catch (error: any) {
             if (axios.isAxiosError(error)) {
-                const message = error.response?.data?.detail?.message || 
-                               error.response?.data?.message ||
-                               (typeof error.response?.data === 'string' ? error.response.data : null) ||
-                               error.message;
+                const message = error.response?.data?.detail?.message ||
+                    error.response?.data?.message ||
+                    (typeof error.response?.data === 'string' ? error.response.data : null) ||
+                    error.message;
                 throw new Error(`ElevenLabs synthesis failed: ${message}`);
             }
             throw error;

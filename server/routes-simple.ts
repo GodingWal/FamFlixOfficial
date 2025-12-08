@@ -573,7 +573,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Check voice clone limit
       const limitCheck = await usageService.checkVoiceCloneLimit(req.user!.id);
       if (!limitCheck.allowed) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: limitCheck.message,
           code: "LIMIT_EXCEEDED",
           upgradeRequired: true
@@ -593,6 +593,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error('Voice profile creation error:', error);
       res.status(400).json({ error: error.message || "Failed to create voice profile" });
+    }
+  });
+
+  app.patch('/api/voice-profiles/:profileId', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { profileId } = req.params;
+      const updates = req.body;
+
+      const profile = await storage.getVoiceProfile(profileId);
+      if (!profile) {
+        return res.status(404).json({ error: "Voice profile not found" });
+      }
+
+      if (profile.userId !== req.user!.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      // Handle metadata updates (merge with existing)
+      if (updates.metadata) {
+        updates.metadata = {
+          ...(profile.metadata || {}),
+          ...updates.metadata
+        };
+      }
+
+      // Handle isFavorite (store in metadata for now if column doesn't exist)
+      if (updates.isFavorite !== undefined) {
+        updates.metadata = {
+          ...(updates.metadata || profile.metadata || {}),
+          isFavorite: updates.isFavorite
+        };
+        delete updates.isFavorite;
+      }
+
+      const updatedProfile = await storage.updateVoiceProfile(profileId, updates);
+      res.json(updatedProfile);
+    } catch (error: any) {
+      console.error('Update voice profile error:', error);
+      res.status(400).json({ error: error.message || "Failed to update voice profile" });
     }
   });
 
@@ -681,7 +720,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/voice-profiles/:profileId/preview', authenticateToken, async (req: AuthRequest, res) => {
     try {
       const profileId = req.params.profileId;
-      const { familyId, targetSeconds = 20 } = req.body ?? {};
+      const { familyId, targetSeconds = 20, voiceSettings } = req.body ?? {};
 
       let profile = await storage.getVoiceProfile(profileId);
       if (!profile) {
@@ -697,24 +736,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Auto-migrate non-ElevenLabs profiles if ElevenLabs is configured
       const { getElevenLabsProvider } = await import('./tts');
       const elevenLabs = getElevenLabsProvider();
-      
+
       console.log(`[preview] Profile provider: ${profile.provider}, ElevenLabs configured: ${elevenLabs.isConfigured()}`);
-      
+
       if (profile.provider !== 'ELEVENLABS' && elevenLabs.isConfigured()) {
         console.log(`[preview] Auto-migrating voice profile ${profileId} to ElevenLabs...`);
-        
+
         const audioPath = profile.providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
         if (audioPath) {
           try {
             const fsp = await import('fs/promises');
             await fsp.access(audioPath);
-            
+
             const voiceId = await elevenLabs.createVoiceClone(
               profile.name,
               [audioPath],
               `Voice clone for ${profile.name} - Migrated from ${profile.provider}`
             );
-            
+
             await storage.updateVoiceProfile(profileId, {
               provider: 'ELEVENLABS' as any,
               providerRef: voiceId,
@@ -725,7 +764,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 elevenLabsVoiceId: voiceId,
               }
             });
-            
+
             profile = await storage.getVoiceProfile(profileId);
             console.log(`[preview] Successfully migrated to ElevenLabs voice: ${voiceId}`);
           } catch (migrationError: any) {
@@ -741,7 +780,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let generation: any = null;
       let previewWarning: string | undefined;
       try {
-        const generationId = await voiceService.generateSpeech(profileId, story, req.user!.id);
+        const generationId = await voiceService.generateSpeech(profileId, story, req.user!.id, voiceSettings);
         generation = await storage.getVoiceGeneration(generationId);
       } catch (ttsError: any) {
         const message = String(ttsError?.message || '').trim() || 'TTS unavailable for preview';
@@ -1003,7 +1042,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')));
 
   // WebSocket server
-  const server = createServer(app);
+  const httpServer = createServer(app);
 
-  return server;
+  // Stories management
+  app.get('/api/stories', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { category, query, limit, offset } = req.query;
+
+      const results = await storage.searchStories({
+        category: category as any,
+        query: query as string,
+        limit: limit ? Number(limit) : 20,
+        offset: offset ? Number(offset) : 0,
+      });
+
+      res.json(results.items);
+    } catch (error: any) {
+      console.error('Get stories error:', error);
+      res.status(500).json({ error: "Failed to get stories" });
+    }
+  });
+
+  app.get('/api/stories/:storyId', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const story = await storage.getStory(req.params.storyId);
+      if (!story) {
+        return res.status(404).json({ error: "Story not found" });
+      }
+      res.json(story);
+    } catch (error: any) {
+      console.error('Get story error:', error);
+      res.status(500).json({ error: "Failed to get story" });
+    }
+  });
+
+  return httpServer;
 }

@@ -1,3 +1,4 @@
+
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -24,13 +25,14 @@ import {
 import { cn } from '@/lib/utils';
 import { apiRequest } from '@/lib/queryClient';
 import { toast } from '@/hooks/use-toast';
-import { 
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
   DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu';
+import { VoiceSettingsDialog } from './VoiceSettingsDialog';
 
 interface VoiceProfile {
   id: string;
@@ -48,6 +50,12 @@ interface VoiceProfile {
     recordingCount?: number;
     lastUsed?: string;
     usageCount?: number;
+    voiceSettings?: {
+      stability: number;
+      similarity_boost: number;
+      style: number;
+      use_speaker_boost: boolean;
+    };
   };
   isFavorite?: boolean;
 }
@@ -78,7 +86,11 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
   const [sortBy, setSortBy] = useState<string>('recent');
   const [playingVoice, setPlayingVoice] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  
+
+  // Settings Dialog State
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [selectedVoiceForSettings, setSelectedVoiceForSettings] = useState<VoiceProfile | null>(null);
+
   const queryClient = useQueryClient();
 
   // Fetch voice profiles
@@ -90,7 +102,7 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
       if (statusFilter !== 'all') params.append('status', statusFilter);
       if (familyFilter !== 'all') params.append('familyId', familyFilter);
       params.append('sortBy', sortBy);
-      
+
       const response = await apiRequest('GET', `/api/voice-profiles?${params}`);
       return response.json();
     },
@@ -239,6 +251,11 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
     });
   };
 
+  const handleEditSettings = (voice: VoiceProfile) => {
+    setSelectedVoiceForSettings(voice);
+    setSettingsDialogOpen(true);
+  };
+
   const getStatusBadgeVariant = (status: VoiceProfile['status']) => {
     switch (status) {
       case 'ready': return 'default';
@@ -255,10 +272,10 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
   };
 
   const filteredVoices = voices.filter(voice => {
-    const matchesSearch = searchQuery === '' || 
+    const matchesSearch = searchQuery === '' ||
       voice.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       voice.familyName?.toLowerCase().includes(searchQuery.toLowerCase());
-    
+
     return matchesSearch;
   });
 
@@ -288,7 +305,7 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
             className="pl-10"
           />
         </div>
-        
+
         <div className="flex gap-2">
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-32">
@@ -301,7 +318,7 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
               <SelectItem value="error">Error</SelectItem>
             </SelectContent>
           </Select>
-          
+
           <Select value={familyFilter} onValueChange={setFamilyFilter}>
             <SelectTrigger className="w-32">
               <SelectValue placeholder="Family" />
@@ -315,7 +332,7 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
               ))}
             </SelectContent>
           </Select>
-          
+
           <Select value={sortBy} onValueChange={setSortBy}>
             <SelectTrigger className="w-32">
               <SelectValue placeholder="Sort" />
@@ -366,8 +383,8 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredVoices.map((voice) => (
-            <Card 
-              key={voice.id} 
+            <Card
+              key={voice.id}
               className={cn(
                 "overflow-hidden transition-all hover:shadow-md",
                 selectionMode && selectedVoices.includes(voice.id) && "ring-2 ring-primary",
@@ -390,12 +407,12 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
                       </p>
                     )}
                   </div>
-                  
+
                   <div className="flex items-center gap-1">
                     <Badge variant={getStatusBadgeVariant(voice.status)}>
                       {voice.status}
                     </Badge>
-                    
+
                     {!selectionMode && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -427,12 +444,12 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
                             <Share className="h-4 w-4 mr-2" />
                             Share
                           </DropdownMenuItem>
-                          <DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleEditSettings(voice)}>
                             <Edit className="h-4 w-4 mr-2" />
-                            Edit
+                            Fine-tune Settings
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
-                          <DropdownMenuItem 
+                          <DropdownMenuItem
                             onClick={() => handleDelete(voice)}
                             className="text-destructive"
                           >
@@ -445,7 +462,7 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
                   </div>
                 </div>
               </CardHeader>
-              
+
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
@@ -521,6 +538,16 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
                       <User className="h-4 w-4 mr-2" />
                       Use Voice
                     </Button>
+
+                    <Button
+                      onClick={() => handleEditSettings(voice)}
+                      size="sm"
+                      variant="ghost"
+                      className="px-2"
+                      title="Fine-tune Settings"
+                    >
+                      <Edit className="h-4 w-4" />
+                    </Button>
                   </div>
                 )}
 
@@ -533,6 +560,16 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({
             </Card>
           ))}
         </div>
+      )}
+
+      {selectedVoiceForSettings && (
+        <VoiceSettingsDialog
+          open={settingsDialogOpen}
+          onOpenChange={setSettingsDialogOpen}
+          voiceProfileId={selectedVoiceForSettings.id}
+          voiceName={selectedVoiceForSettings.name}
+          initialSettings={selectedVoiceForSettings.metadata?.voiceSettings}
+        />
       )}
     </div>
   );

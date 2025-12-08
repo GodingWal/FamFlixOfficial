@@ -1097,6 +1097,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.patch('/api/voice-profiles/:profileId', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { profileId } = req.params;
+      const updates = req.body;
+
+      const profile = await storage.getVoiceProfile(profileId);
+      if (!profile) {
+        return res.status(404).json({ error: "Voice profile not found" });
+      }
+
+      if (profile.userId !== req.user!.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      // Handle metadata updates (merge with existing)
+      if (updates.metadata) {
+        updates.metadata = {
+          ...(profile.metadata || {}),
+          ...updates.metadata
+        };
+      }
+
+      // Handle isFavorite (store in metadata for now if column doesn't exist)
+      if (updates.isFavorite !== undefined) {
+        updates.metadata = {
+          ...(updates.metadata || profile.metadata || {}),
+          isFavorite: updates.isFavorite
+        };
+        delete updates.isFavorite;
+      }
+
+      const updatedProfile = await storage.updateVoiceProfile(profileId, updates);
+      res.json(updatedProfile);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to update voice profile";
+      logger.error('Update voice profile error', { error: errorMessage, profileId: req.params.profileId });
+      res.status(400).json({ error: errorMessage });
+    }
+  });
+
   app.get('/api/voice-profiles', authenticateToken, async (req: AuthRequest, res) => {
     try {
       const { familyId } = req.query;
@@ -1194,20 +1234,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (profile.provider !== 'ELEVENLABS' && elevenLabs.isConfigured()) {
         logger.info('Auto-migrating voice profile to ElevenLabs', { profileId });
-        
+
         // Find the audio sample file
         const audioPath = profile.providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
         if (audioPath) {
           try {
             const fsp = await import('fs/promises');
             await fsp.access(audioPath);
-            
+
             const voiceId = await elevenLabs.createVoiceClone(
               profile.name,
               [audioPath],
               `Voice clone for ${profile.name} - Migrated from ${profile.provider}`
             );
-            
+
             await storage.updateVoiceProfile(profileId, {
               provider: 'ELEVENLABS' as any,
               providerRef: voiceId,
@@ -1218,7 +1258,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 elevenLabsVoiceId: voiceId,
               }
             });
-            
+
             profile = await storage.getVoiceProfile(profileId);
             logger.info('Successfully migrated to ElevenLabs voice', { voiceId });
           } catch (migrationError: unknown) {

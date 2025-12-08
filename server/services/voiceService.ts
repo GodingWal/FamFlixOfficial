@@ -358,9 +358,9 @@ export class VoiceService {
         const audioFileName = `${nanoid()}_${Date.now()}_sample.wav`;
         const audioFilePath = path.join(this.audioStoragePath, audioFileName);
         await fs.writeFile(audioFilePath, processedAudio);
-        processedRecordings.push({ 
-          buffer: processedAudio, 
-          duration: recording.duration, 
+        processedRecordings.push({
+          buffer: processedAudio,
+          duration: recording.duration,
           metadata: recording.metadata,
           filePath: audioFilePath,
         });
@@ -375,7 +375,7 @@ export class VoiceService {
       if (elevenLabs.isConfigured()) {
         logger.info('VoiceService: Using ElevenLabs for voice cloning');
         provider = "ELEVENLABS";
-        
+
         try {
           const voiceId = await elevenLabs.createVoiceClone(
             name,
@@ -392,7 +392,7 @@ export class VoiceService {
       } else {
         logger.info('VoiceService: ElevenLabs not configured, storing local audio prompt');
         provider = this.defaultProvider;
-        
+
         const promptBuffer = processedRecordings.length > 1
           ? await this.combineProcessedAudioFiles(processedRecordings.map(r => r.buffer))
           : processedRecordings[0].buffer;
@@ -403,7 +403,7 @@ export class VoiceService {
         providerRef = audioFilePath;
       }
 
-      const audioSampleUrl = processedRecordings.length > 0 
+      const audioSampleUrl = processedRecordings.length > 0
         ? `/uploads/audio/${path.basename(processedRecordings[0].filePath)}`
         : undefined;
 
@@ -960,13 +960,7 @@ export class VoiceService {
     }
   }
 
-  async generateSpeech(
-    voiceProfileId: string,
-    text: string,
-    requestedBy: string,
-    voiceSettings?: Partial<VoiceSynthesisSettings>,
-    preset?: keyof typeof VOICE_SETTING_PRESETS
-  ): Promise<string> {
+  async generateSpeech(voiceProfileId: string, text: string, requestedBy: string, voiceSettings?: any): Promise<string> {
     const voiceProfile = await storage.getVoiceProfile(voiceProfileId);
     if (!voiceProfile) {
       throw new Error("Voice profile not found");
@@ -1020,7 +1014,7 @@ export class VoiceService {
       status: "processing",
       metadata: {
         createdAt: new Date().toISOString(),
-        voiceSettings: effectiveSettings,
+        usedSettings: voiceSettings // Store used settings for reference
       }
     });
 
@@ -1032,6 +1026,11 @@ export class VoiceService {
       }
 
       const provider = getTTSProvider(providerKey as string);
+
+      // Merge profile settings with overrides
+      // If voiceSettings is provided, it overrides what's in the profile
+      const effectiveSettings = voiceSettings || (voiceProfile.metadata as any)?.voiceSettings;
+
       const result = await provider.synthesize({
         text,
         voiceRef: providerRef,
@@ -1039,8 +1038,7 @@ export class VoiceService {
         sectionId: undefined,
         metadata: {
           requestedBy,
-          // Pass voice settings to the provider
-          ...effectiveSettings,
+          voiceSettings: effectiveSettings
         },
       });
 
