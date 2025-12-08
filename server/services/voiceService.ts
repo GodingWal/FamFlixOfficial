@@ -8,6 +8,115 @@ import { config } from "../config";
 import { getTTSProvider, getElevenLabsProvider } from "../tts";
 import { logger } from "../utils/logger";
 
+// Voice quality thresholds for optimal cloning
+const VOICE_QUALITY_THRESHOLDS = {
+  MIN_DURATION_SECONDS: 30,        // Minimum total audio duration for good cloning
+  OPTIMAL_DURATION_SECONDS: 120,   // Optimal duration (2 minutes)
+  MIN_RMS_LEVEL: 0.02,             // Minimum RMS level (too quiet below this)
+  MAX_RMS_LEVEL: 0.5,              // Maximum RMS level (distortion risk above this)
+  OPTIMAL_RMS_MIN: 0.05,           // Optimal RMS range minimum
+  OPTIMAL_RMS_MAX: 0.3,            // Optimal RMS range maximum
+  CLIPPING_THRESHOLD: 0.95,        // Peak level indicating clipping
+  MIN_SAMPLE_RATE: 22050,          // Minimum acceptable sample rate
+  OPTIMAL_SAMPLE_RATE: 44100,      // Optimal sample rate
+};
+
+export interface VoiceQualityAnalysis {
+  overallScore: number;           // 0-100 quality score
+  isAcceptable: boolean;          // Whether quality is sufficient for cloning
+  duration: number;               // Total duration in seconds
+  rmsLevel: number;               // RMS (volume) level
+  peakLevel: number;              // Peak amplitude
+  sampleRate: number;             // Sample rate
+  issues: string[];               // List of detected issues
+  recommendations: string[];      // Suggestions for improvement
+  speakerConsistency: number;     // 0-100 consistency score across samples
+}
+
+/**
+ * Voice synthesis settings for fine-tuning the cloned voice output
+ * These settings control how similar the output sounds to the original voice
+ */
+export interface VoiceSynthesisSettings {
+  /**
+   * Stability: Controls variation in the generated speech (0.0 - 1.0)
+   * - Lower values (0.0-0.3): More expressive, varied intonation
+   * - Medium values (0.4-0.6): Balanced expressiveness
+   * - Higher values (0.7-1.0): More consistent, monotone delivery
+   * Default: 0.65 (balanced for natural speech with consistency)
+   */
+  stability: number;
+
+  /**
+   * Similarity Boost: How closely the voice matches the original (0.0 - 1.0)
+   * - Lower values (0.0-0.5): More variation from original voice
+   * - Medium values (0.6-0.8): Moderate similarity
+   * - Higher values (0.9-1.0): Maximum similarity to original voice
+   * Default: 0.95 (prioritize sounding like the original)
+   */
+  similarity_boost: number;
+
+  /**
+   * Style: Intensity of the voice style/personality (0.0 - 1.0)
+   * - Lower values (0.0-0.3): More neutral delivery
+   * - Higher values (0.4-1.0): More stylized/exaggerated
+   * For voice cloning, keep this LOW to preserve original characteristics
+   * Default: 0.0 (neutral, preserve original voice style)
+   */
+  style: number;
+
+  /**
+   * Speaker Boost: Enhances clarity and speaker characteristics
+   * Recommended: true for voice cloning
+   * Default: true
+   */
+  use_speaker_boost: boolean;
+}
+
+/**
+ * Default voice settings optimized for accurate voice cloning
+ */
+export const DEFAULT_VOICE_SETTINGS: VoiceSynthesisSettings = {
+  stability: 0.65,
+  similarity_boost: 0.95,
+  style: 0.0,
+  use_speaker_boost: true,
+};
+
+/**
+ * Preset configurations for different use cases
+ */
+export const VOICE_SETTING_PRESETS = {
+  // Maximum similarity to original voice (recommended for voice cloning)
+  maximum_similarity: {
+    stability: 0.70,
+    similarity_boost: 1.0,
+    style: 0.0,
+    use_speaker_boost: true,
+  },
+  // Balanced settings for natural conversation
+  natural_conversation: {
+    stability: 0.50,
+    similarity_boost: 0.85,
+    style: 0.1,
+    use_speaker_boost: true,
+  },
+  // More expressive for storytelling
+  expressive_storytelling: {
+    stability: 0.35,
+    similarity_boost: 0.80,
+    style: 0.3,
+    use_speaker_boost: true,
+  },
+  // Consistent delivery for narration
+  consistent_narration: {
+    stability: 0.80,
+    similarity_boost: 0.90,
+    style: 0.0,
+    use_speaker_boost: true,
+  },
+} as const;
+
 export class VoiceService {
   private readonly audioStoragePath = path.resolve(process.cwd(), "uploads", "audio");
   private readonly tempDir = path.resolve(process.cwd(), "temp");
@@ -92,22 +201,26 @@ export class VoiceService {
     });
   }
 
-  // Minimal prompt preprocessing for zero-shot cloning: keep identity, standardize container/format
-  private async preprocessVoicePrompt(audioBuffer: Buffer): Promise<Buffer> {
+  // Minimal prompt preprocessing for voice cloning: preserve identity while standardizing format
+  // IMPORTANT: Avoid aggressive processing that might alter voice characteristics (timbre, pitch, formants)
+  private async preprocessVoicePrompt(audioBuffer: Buffer, preserveQuality = true): Promise<Buffer> {
     try {
       let workingBuffer = audioBuffer;
-      // Properly decode non-WAV uploads (e.g., MP3/OGG/M4A) using ffmpeg; do NOT wrap raw bytes
+
+      // Use higher sample rate (44100 Hz) to preserve more voice detail
+      // ElevenLabs and modern TTS systems can utilize higher quality audio
+      const TARGET_SR = preserveQuality ? 44100 : 24000;
+      const TARGET_CH = 1;  // Mono is standard for voice cloning
+      const TARGET_BIT = 16; // 16-bit PCM is sufficient and widely supported
+
+      // Properly decode non-WAV uploads (e.g., MP3/OGG/M4A) using ffmpeg
       if (!this.isWavBuffer(workingBuffer)) {
-        workingBuffer = await this.decodeAudioToWav(workingBuffer, 24000, 1, 16);
+        workingBuffer = await this.decodeAudioToWav(workingBuffer, TARGET_SR, TARGET_CH, TARGET_BIT);
       }
 
       let audioInfo = await this.analyzeAudioBuffer(workingBuffer);
 
-      // Zero-shot cloning commonly operates at 24kHz mono; keep 16-bit PCM
-      const TARGET_SR = 24000;
-      const TARGET_CH = 1;
-      const TARGET_BIT = 16;
-
+      // Convert to target format only if necessary
       if (
         audioInfo.sampleRate !== TARGET_SR ||
         audioInfo.channels !== TARGET_CH ||
@@ -117,14 +230,19 @@ export class VoiceService {
         audioInfo = await this.analyzeAudioBuffer(workingBuffer);
       }
 
-      // Light normalization only (no denoise / HPF to preserve timbre)
+      // Apply gentle normalization to preserve voice dynamics
+      // CRITICAL: Do NOT apply noise reduction, compression, or heavy filtering
+      // These can alter the unique characteristics that make a voice recognizable
       try {
         const dataStart = (audioInfo as any).dataOffset ?? 44;
         const dataEnd = dataStart + ((audioInfo as any).dataSize ?? Math.max(0, workingBuffer.length - dataStart));
         const safeEnd = Math.min(workingBuffer.length, dataEnd);
         const audioData = workingBuffer.slice(dataStart, safeEnd);
         const samples = this.extractSamples(audioData, audioInfo);
-        const normalized = this.normalizeAudio(samples);
+
+        // Use gentle normalization that preserves dynamics
+        const normalized = this.normalizeAudioGently(samples);
+
         return this.createWavBuffer(normalized, audioInfo.sampleRate, audioInfo.channels, audioInfo.bitDepth);
       } catch {
         return workingBuffer;
@@ -133,6 +251,51 @@ export class VoiceService {
       logger.error('Voice prompt preprocessing error', { error });
       return audioBuffer;
     }
+  }
+
+  /**
+   * Gentle normalization that preserves voice dynamics and characteristics
+   * Uses RMS-based normalization instead of peak-based for more natural results
+   */
+  private normalizeAudioGently(samples: number[]): number[] {
+    if (samples.length === 0) return samples;
+
+    // Calculate RMS (root mean square) for perceived loudness
+    let sumSquares = 0;
+    let peak = 0;
+    for (const sample of samples) {
+      sumSquares += sample * sample;
+      peak = Math.max(peak, Math.abs(sample));
+    }
+    const rms = Math.sqrt(sumSquares / samples.length);
+
+    // Target RMS level for voice (approximately -20dBFS)
+    // This preserves natural dynamics while ensuring adequate volume
+    const targetRms = 0.1; // ~-20dBFS
+    const targetPeak = 0.85; // Leave headroom to prevent clipping
+
+    if (rms <= 0 || !Number.isFinite(rms)) return samples;
+
+    // Calculate gain based on RMS, but limit by peak to prevent clipping
+    let gain = targetRms / rms;
+
+    // Ensure we don't exceed peak limit
+    if (peak * gain > targetPeak) {
+      gain = targetPeak / peak;
+    }
+
+    // Apply gain with soft limiting
+    const output = new Array<number>(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      let sample = samples[i] * gain;
+      // Soft clipping using tanh for any samples that approach limits
+      if (Math.abs(sample) > 0.9) {
+        sample = Math.tanh(sample);
+      }
+      output[i] = Math.max(-1, Math.min(1, sample));
+    }
+
+    return output;
   }
 
   private async ensureStorageDirectory(): Promise<void> {
@@ -797,7 +960,13 @@ export class VoiceService {
     }
   }
 
-  async generateSpeech(voiceProfileId: string, text: string, requestedBy: string): Promise<string> {
+  async generateSpeech(
+    voiceProfileId: string,
+    text: string,
+    requestedBy: string,
+    voiceSettings?: Partial<VoiceSynthesisSettings>,
+    preset?: keyof typeof VOICE_SETTING_PRESETS
+  ): Promise<string> {
     const voiceProfile = await storage.getVoiceProfile(voiceProfileId);
     if (!voiceProfile) {
       throw new Error("Voice profile not found");
@@ -807,6 +976,42 @@ export class VoiceService {
       throw new Error("Voice profile is not ready for speech generation");
     }
 
+    // Determine voice settings: custom > preset > profile defaults > system defaults
+    let effectiveSettings: VoiceSynthesisSettings;
+
+    if (voiceSettings) {
+      // Use custom settings, falling back to defaults for missing values
+      effectiveSettings = {
+        ...DEFAULT_VOICE_SETTINGS,
+        ...voiceSettings,
+      };
+    } else if (preset && VOICE_SETTING_PRESETS[preset]) {
+      // Use preset configuration
+      effectiveSettings = { ...VOICE_SETTING_PRESETS[preset] };
+    } else if ((voiceProfile.metadata as any)?.voiceSettings) {
+      // Use profile's saved settings
+      effectiveSettings = {
+        ...DEFAULT_VOICE_SETTINGS,
+        ...(voiceProfile.metadata as any).voiceSettings,
+      };
+    } else {
+      // Use system defaults (optimized for voice cloning)
+      effectiveSettings = { ...DEFAULT_VOICE_SETTINGS };
+    }
+
+    // Validate settings are within valid ranges
+    effectiveSettings.stability = Math.max(0, Math.min(1, effectiveSettings.stability));
+    effectiveSettings.similarity_boost = Math.max(0, Math.min(1, effectiveSettings.similarity_boost));
+    effectiveSettings.style = Math.max(0, Math.min(1, effectiveSettings.style));
+
+    logger.info('Generating speech with settings', {
+      profileId: voiceProfileId,
+      stability: effectiveSettings.stability,
+      similarity_boost: effectiveSettings.similarity_boost,
+      style: effectiveSettings.style,
+      speaker_boost: effectiveSettings.use_speaker_boost,
+    });
+
     // Create voice generation record
     const generation = await storage.createVoiceGeneration({
       voiceProfileId,
@@ -814,7 +1019,8 @@ export class VoiceService {
       requestedBy,
       status: "processing",
       metadata: {
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        voiceSettings: effectiveSettings,
       }
     });
 
@@ -831,7 +1037,11 @@ export class VoiceService {
         voiceRef: providerRef,
         storyId: undefined,
         sectionId: undefined,
-        metadata: { requestedBy },
+        metadata: {
+          requestedBy,
+          // Pass voice settings to the provider
+          ...effectiveSettings,
+        },
       });
 
       await storage.updateVoiceGeneration(generation.id, {
@@ -843,6 +1053,7 @@ export class VoiceService {
           audioFilePath: result.key,
           completedAt: new Date().toISOString(),
           checksum: result.checksum,
+          voiceSettings: effectiveSettings,
         }
       });
 
@@ -862,6 +1073,82 @@ export class VoiceService {
 
       throw new Error(`${errorMessage}. Please try again.`);
     }
+  }
+
+  /**
+   * Update voice synthesis settings for a voice profile
+   * These settings will be used as defaults when generating speech
+   */
+  async updateVoiceProfileSettings(
+    profileId: string,
+    settings: Partial<VoiceSynthesisSettings>
+  ): Promise<void> {
+    const profile = await storage.getVoiceProfile(profileId);
+    if (!profile) {
+      throw new Error("Voice profile not found");
+    }
+
+    // Validate and clamp settings to valid ranges
+    const validatedSettings: Partial<VoiceSynthesisSettings> = {};
+
+    if (settings.stability !== undefined) {
+      validatedSettings.stability = Math.max(0, Math.min(1, settings.stability));
+    }
+    if (settings.similarity_boost !== undefined) {
+      validatedSettings.similarity_boost = Math.max(0, Math.min(1, settings.similarity_boost));
+    }
+    if (settings.style !== undefined) {
+      validatedSettings.style = Math.max(0, Math.min(1, settings.style));
+    }
+    if (settings.use_speaker_boost !== undefined) {
+      validatedSettings.use_speaker_boost = settings.use_speaker_boost;
+    }
+
+    // Merge with existing settings
+    const existingSettings = (profile.metadata as any)?.voiceSettings || {};
+    const newSettings = {
+      ...DEFAULT_VOICE_SETTINGS,
+      ...existingSettings,
+      ...validatedSettings,
+    };
+
+    await storage.updateVoiceProfile(profileId, {
+      metadata: {
+        ...(profile.metadata || {}),
+        voiceSettings: newSettings,
+        settingsUpdatedAt: new Date().toISOString(),
+      },
+    });
+
+    logger.info('Voice profile settings updated', {
+      profileId,
+      settings: newSettings,
+    });
+  }
+
+  /**
+   * Get voice synthesis settings for a profile
+   * Returns profile settings merged with defaults
+   */
+  async getVoiceProfileSettings(profileId: string): Promise<VoiceSynthesisSettings> {
+    const profile = await storage.getVoiceProfile(profileId);
+    if (!profile) {
+      throw new Error("Voice profile not found");
+    }
+
+    const profileSettings = (profile.metadata as any)?.voiceSettings || {};
+
+    return {
+      ...DEFAULT_VOICE_SETTINGS,
+      ...profileSettings,
+    };
+  }
+
+  /**
+   * Get available voice setting presets
+   */
+  getVoiceSettingPresets(): typeof VOICE_SETTING_PRESETS {
+    return VOICE_SETTING_PRESETS;
   }
 
   async getVoiceProfilesByFamily(familyId: string) {
@@ -907,6 +1194,170 @@ export class VoiceService {
   }
   async getVoiceGenerationsByProfile(profileId: string) {
     return await storage.getVoiceGenerationsByProfile(profileId);
+  }
+
+  /**
+   * Analyze audio quality for voice cloning suitability
+   * Returns detailed quality metrics and recommendations
+   */
+  async analyzeVoiceQuality(audioBuffers: Buffer[]): Promise<VoiceQualityAnalysis> {
+    const issues: string[] = [];
+    const recommendations: string[] = [];
+    let totalDuration = 0;
+    let totalRms = 0;
+    let maxPeak = 0;
+    let sampleRate = 0;
+    const rmsValues: number[] = [];
+
+    for (const buffer of audioBuffers) {
+      try {
+        let wavBuffer = buffer;
+        if (!this.isWavBuffer(buffer)) {
+          wavBuffer = await this.decodeAudioToWav(buffer);
+        }
+
+        const audioInfo = await this.analyzeAudioBuffer(wavBuffer);
+        const dataStart = (audioInfo as any).dataOffset ?? 44;
+        const dataEnd = dataStart + ((audioInfo as any).dataSize ?? Math.max(0, wavBuffer.length - dataStart));
+        const safeEnd = Math.min(wavBuffer.length, dataEnd);
+        const audioData = wavBuffer.slice(dataStart, safeEnd);
+        const samples = this.extractSamples(audioData, audioInfo);
+
+        // Calculate RMS for this segment
+        let rms = 0;
+        let peak = 0;
+        for (const sample of samples) {
+          rms += sample * sample;
+          peak = Math.max(peak, Math.abs(sample));
+        }
+        rms = samples.length > 0 ? Math.sqrt(rms / samples.length) : 0;
+
+        totalDuration += audioInfo.duration;
+        totalRms += rms;
+        rmsValues.push(rms);
+        maxPeak = Math.max(maxPeak, peak);
+        sampleRate = Math.max(sampleRate, audioInfo.sampleRate);
+      } catch (error) {
+        logger.warn('Failed to analyze audio segment', { error });
+      }
+    }
+
+    const avgRms = rmsValues.length > 0 ? totalRms / rmsValues.length : 0;
+
+    // Calculate speaker consistency (variance in RMS across samples)
+    let rmsVariance = 0;
+    if (rmsValues.length > 1) {
+      for (const rms of rmsValues) {
+        rmsVariance += Math.pow(rms - avgRms, 2);
+      }
+      rmsVariance = Math.sqrt(rmsVariance / rmsValues.length);
+    }
+    // Lower variance = higher consistency (0-100 scale)
+    const speakerConsistency = Math.max(0, Math.min(100, 100 - (rmsVariance * 500)));
+
+    // Score calculation
+    let score = 100;
+
+    // Duration scoring
+    if (totalDuration < VOICE_QUALITY_THRESHOLDS.MIN_DURATION_SECONDS) {
+      const durationDeficit = VOICE_QUALITY_THRESHOLDS.MIN_DURATION_SECONDS - totalDuration;
+      score -= Math.min(40, durationDeficit * 1.5);
+      issues.push(`Recording too short (${totalDuration.toFixed(1)}s). Minimum ${VOICE_QUALITY_THRESHOLDS.MIN_DURATION_SECONDS}s recommended.`);
+      recommendations.push(`Record at least ${Math.ceil(VOICE_QUALITY_THRESHOLDS.MIN_DURATION_SECONDS - totalDuration)} more seconds of audio.`);
+    } else if (totalDuration < VOICE_QUALITY_THRESHOLDS.OPTIMAL_DURATION_SECONDS) {
+      score -= 10;
+      recommendations.push(`For best results, record ${VOICE_QUALITY_THRESHOLDS.OPTIMAL_DURATION_SECONDS}+ seconds total.`);
+    }
+
+    // Volume (RMS) scoring
+    if (avgRms < VOICE_QUALITY_THRESHOLDS.MIN_RMS_LEVEL) {
+      score -= 30;
+      issues.push('Audio is too quiet. Voice characteristics may not be captured properly.');
+      recommendations.push('Speak louder or move closer to the microphone.');
+    } else if (avgRms < VOICE_QUALITY_THRESHOLDS.OPTIMAL_RMS_MIN) {
+      score -= 15;
+      issues.push('Audio volume is below optimal level.');
+      recommendations.push('Try speaking slightly louder for clearer voice capture.');
+    } else if (avgRms > VOICE_QUALITY_THRESHOLDS.MAX_RMS_LEVEL) {
+      score -= 20;
+      issues.push('Audio is very loud and may be distorted.');
+      recommendations.push('Move further from the microphone or speak softer.');
+    }
+
+    // Clipping detection
+    if (maxPeak > VOICE_QUALITY_THRESHOLDS.CLIPPING_THRESHOLD) {
+      score -= 25;
+      issues.push('Audio clipping detected. This can severely degrade voice quality.');
+      recommendations.push('Reduce input volume or increase distance from microphone.');
+    }
+
+    // Sample rate scoring
+    if (sampleRate < VOICE_QUALITY_THRESHOLDS.MIN_SAMPLE_RATE) {
+      score -= 20;
+      issues.push(`Low audio quality detected (${sampleRate}Hz sample rate).`);
+      recommendations.push('Use a higher quality microphone or recording settings.');
+    } else if (sampleRate < VOICE_QUALITY_THRESHOLDS.OPTIMAL_SAMPLE_RATE) {
+      score -= 5;
+    }
+
+    // Speaker consistency scoring
+    if (speakerConsistency < 60) {
+      score -= 15;
+      issues.push('Inconsistent volume levels across recordings.');
+      recommendations.push('Maintain consistent distance from microphone and speaking volume.');
+    } else if (speakerConsistency < 80) {
+      score -= 5;
+    }
+
+    // Ensure score is within bounds
+    score = Math.max(0, Math.min(100, Math.round(score)));
+
+    // Add general recommendations based on score
+    if (score >= 80) {
+      recommendations.push('Audio quality is excellent for voice cloning.');
+    } else if (score >= 60) {
+      recommendations.push('Audio quality is acceptable but could be improved.');
+    } else {
+      recommendations.push('Consider re-recording in a quieter environment with better microphone positioning.');
+    }
+
+    return {
+      overallScore: score,
+      isAcceptable: score >= 50,
+      duration: totalDuration,
+      rmsLevel: avgRms,
+      peakLevel: maxPeak,
+      sampleRate,
+      issues,
+      recommendations,
+      speakerConsistency,
+    };
+  }
+
+  /**
+   * Validate audio samples before creating a voice clone
+   * Throws if quality is too low, returns analysis otherwise
+   */
+  async validateForCloning(audioBuffers: Buffer[]): Promise<VoiceQualityAnalysis> {
+    const analysis = await this.analyzeVoiceQuality(audioBuffers);
+
+    logger.info('Voice quality analysis completed', {
+      score: analysis.overallScore,
+      duration: analysis.duration,
+      rms: analysis.rmsLevel,
+      peak: analysis.peakLevel,
+      consistency: analysis.speakerConsistency,
+      issues: analysis.issues.length,
+    });
+
+    if (!analysis.isAcceptable) {
+      logger.warn('Voice quality below threshold', {
+        score: analysis.overallScore,
+        issues: analysis.issues
+      });
+    }
+
+    return analysis;
   }
 }
 

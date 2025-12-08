@@ -42,12 +42,40 @@ interface VoiceRecordingWizardProps {
   onCancel: () => void;
 }
 
+// Tips for optimal voice cloning quality
+const RECORDING_TIPS = {
+  environment: [
+    'Record in a quiet room with minimal echo',
+    'Turn off fans, AC, and other background noise sources',
+    'Close windows to reduce outside noise',
+    'Soft furnishings (curtains, carpet) help reduce echo',
+  ],
+  microphone: [
+    'Position microphone 6-12 inches from your mouth',
+    'Speak slightly off-axis (not directly into mic) to reduce plosives',
+    'Use a pop filter if available',
+    'Keep consistent distance throughout recording',
+  ],
+  speaking: [
+    'Speak at your natural pace - don\'t rush',
+    'Use your normal conversational voice',
+    'Maintain consistent volume throughout',
+    'Articulate clearly but don\'t over-enunciate',
+  ],
+  quality: [
+    'Aim for 2+ minutes of total recording time',
+    'Green audio level (50-70%) is optimal',
+    'Red level means you\'re too loud - move back',
+    'Gray/low level means you\'re too quiet - move closer',
+  ],
+};
+
 const RECORDING_PROMPTS = [
   {
     id: 'intro',
     title: 'Phase 1: Introduction',
     text: 'Hello there! My name is [Your Name], and today I am recording my voice for a very special project. I hope this recording captures my natural speaking voice perfectly. Thank you for listening to me today.',
-    description: 'Speak naturally and clearly. This captures your baseline voice.',
+    description: 'Speak naturally and clearly at your normal pace. This captures your baseline voice characteristics.',
     minDuration: 12,
     maxDuration: 20,
   },
@@ -114,6 +142,7 @@ export const VoiceRecordingWizard: React.FC<VoiceRecordingWizardProps> = ({
   onCancel,
 }) => {
   const [currentStep, setCurrentStep] = useState(0);
+  const [showTips, setShowTips] = useState(true);
   const [recordings, setRecordings] = useState<RecordingSession[]>(
     RECORDING_PROMPTS.map(prompt => ({
       id: prompt.id,
@@ -878,6 +907,83 @@ export const VoiceRecordingWizard: React.FC<VoiceRecordingWizardProps> = ({
           <Progress value={progress} className="w-full mt-2 h-2" />
         </CardHeader>
       </Card>
+
+      {/* Recording Tips for Better Voice Cloning */}
+      {showTips && currentStep === 0 && (
+        <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-800 dark:bg-blue-900/20">
+          <CardHeader className="pb-2 pt-4">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2 text-blue-700 dark:text-blue-300">
+                <Info className="h-4 w-4" />
+                Tips for Best Voice Cloning Quality
+              </CardTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowTips(false)}
+                className="text-blue-600 hover:text-blue-800 dark:text-blue-400"
+              >
+                Hide
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0 pb-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div>
+                <h4 className="font-medium mb-2 text-blue-800 dark:text-blue-200">🎙️ Environment</h4>
+                <ul className="space-y-1 text-blue-700 dark:text-blue-300">
+                  {RECORDING_TIPS.environment.map((tip, idx) => (
+                    <li key={idx} className="flex items-start gap-2">
+                      <span className="text-blue-500">•</span>
+                      <span>{tip}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <h4 className="font-medium mb-2 text-blue-800 dark:text-blue-200">🎤 Microphone</h4>
+                <ul className="space-y-1 text-blue-700 dark:text-blue-300">
+                  {RECORDING_TIPS.microphone.map((tip, idx) => (
+                    <li key={idx} className="flex items-start gap-2">
+                      <span className="text-blue-500">•</span>
+                      <span>{tip}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <h4 className="font-medium mb-2 text-blue-800 dark:text-blue-200">🗣️ Speaking</h4>
+                <ul className="space-y-1 text-blue-700 dark:text-blue-300">
+                  {RECORDING_TIPS.speaking.map((tip, idx) => (
+                    <li key={idx} className="flex items-start gap-2">
+                      <span className="text-blue-500">•</span>
+                      <span>{tip}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <h4 className="font-medium mb-2 text-blue-800 dark:text-blue-200">✨ Quality</h4>
+                <ul className="space-y-1 text-blue-700 dark:text-blue-300">
+                  {RECORDING_TIPS.quality.map((tip, idx) => (
+                    <li key={idx} className="flex items-start gap-2">
+                      <span className="text-blue-500">•</span>
+                      <span>{tip}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            <Alert className="mt-4 border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-900/20">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <AlertDescription className="text-amber-700 dark:text-amber-300">
+                <strong>Important:</strong> The more natural and consistent your recordings, the better your cloned voice will sound.
+                Avoid changing your speaking style or distance from the microphone between recordings.
+              </AlertDescription>
+            </Alert>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recording Steps Overview */}
       <Card>
