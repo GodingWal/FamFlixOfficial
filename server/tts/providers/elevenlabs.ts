@@ -100,6 +100,18 @@ export class ElevenLabsProvider implements ITTSProvider {
         const filename = `elevenlabs-${Date.now()}-${nanoid(6)}.mp3`;
         const outFile = path.join(tempDir, filename);
 
+        // Extract voice settings from metadata or use optimized defaults for voice cloning
+        const voiceSettings = {
+            // Higher stability (0.6-0.8) reduces variation but maintains consistency
+            stability: (metadata?.stability as number) ?? 0.65,
+            // CRITICAL: Higher similarity_boost (0.90+) makes output sound more like original voice
+            similarity_boost: (metadata?.similarity_boost as number) ?? 0.95,
+            // Style intensity - keep low for voice cloning to preserve original characteristics
+            style: (metadata?.style as number) ?? 0.0,
+            // Speaker boost enhances voice clarity and similarity
+            use_speaker_boost: (metadata?.use_speaker_boost as boolean) ?? true,
+        };
+
         try {
             const response = await axios.post(
                 `${ELEVENLABS_API_URL}/text-to-speech/${voiceRef}`,
