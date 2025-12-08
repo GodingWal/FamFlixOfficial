@@ -1,4 +1,5 @@
 // Dynamic schema for common tables (works for both SQLite and Postgres)
+import { logger } from "./utils/logger";
 import {
   users, families, familyMembers, videos, voiceProfiles, voiceGenerations,
   collaborationSessions, activityLogs, emailVerificationTokens, passwordResetTokens,
@@ -152,7 +153,7 @@ export class DatabaseStorage implements IStorage {
       try {
         return JSON.stringify(value, null, this.JSON_STRINGIFY_SPACES);
       } catch (error) {
-        console.warn('[storage] Failed to stringify metadata payload:', error);
+        logger.warn('Failed to stringify metadata payload', { error });
         return JSON.stringify({});
       }
     }

@@ -2,6 +2,7 @@ import { storage } from "../storage";
 import { InsertCollaborationSession } from "../db/schema";
 import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
+import { logger } from "../utils/logger";
 
 interface CollaborationMessage {
   type: "join" | "leave" | "update" | "cursor_move" | "chat";
@@ -16,11 +17,16 @@ interface ActiveConnection {
   userId: string;
   videoId: string;
   sessionId: string;
+  lastPing: number;
+  isAlive: boolean;
 }
 
 export class CollaborationService {
   private wss: WebSocketServer | null = null;
   private connections: Map<string, ActiveConnection> = new Map();
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private readonly HEARTBEAT_INTERVAL = 30000; // 30 seconds
+  private readonly CONNECTION_TIMEOUT = 60000; // 60 seconds
 
   initializeWebSocket(server: Server) {
     this.wss = new WebSocketServer({ 
@@ -29,16 +35,22 @@ export class CollaborationService {
     });
 
     this.wss.on('connection', (ws: WebSocket, req) => {
-      console.log('New collaboration connection');
+      logger.info('New collaboration WebSocket connection');
 
       ws.on('message', async (data) => {
         try {
           const message: CollaborationMessage = JSON.parse(data.toString());
+          // Mark connection as alive on any message
+          this.markConnectionAlive(ws);
           await this.handleMessage(ws, message);
         } catch (error) {
-          console.error('WebSocket message error:', error);
+          logger.error('WebSocket message error', { error });
           ws.send(JSON.stringify({ error: 'Invalid message format' }));
         }
+      });
+
+      ws.on('pong', () => {
+        this.markConnectionAlive(ws);
       });
 
       ws.on('close', () => {
@@ -46,9 +58,62 @@ export class CollaborationService {
       });
 
       ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
+        logger.error('WebSocket error', { error });
+        this.handleDisconnection(ws);
       });
     });
+
+    // Start heartbeat to detect stale connections
+    this.startHeartbeat();
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+
+    this.heartbeatInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [connectionId, connection] of Array.from(this.connections.entries())) {
+        if (!connection.isAlive || (now - connection.lastPing) > this.CONNECTION_TIMEOUT) {
+          logger.warn('Terminating stale WebSocket connection', { connectionId, userId: connection.userId });
+          connection.ws.terminate();
+          this.connections.delete(connectionId);
+          storage.endCollaborationSession(connection.sessionId).catch(err =>
+            logger.error('Failed to end stale collaboration session', { error: err, sessionId: connection.sessionId })
+          );
+          continue;
+        }
+
+        connection.isAlive = false;
+        if (connection.ws.readyState === WebSocket.OPEN) {
+          connection.ws.ping();
+        }
+      }
+    }, this.HEARTBEAT_INTERVAL);
+  }
+
+  private markConnectionAlive(ws: WebSocket): void {
+    for (const connection of this.connections.values()) {
+      if (connection.ws === ws) {
+        connection.isAlive = true;
+        connection.lastPing = Date.now();
+        break;
+      }
+    }
+  }
+
+  shutdown(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.wss) {
+      this.wss.close();
+      this.wss = null;
+    }
+    this.connections.clear();
+    logger.info('CollaborationService shutdown complete');
   }
 
   private async handleMessage(ws: WebSocket, message: CollaborationMessage) {
@@ -88,6 +153,8 @@ export class CollaborationService {
         userId: message.userId,
         videoId: message.videoId,
         sessionId: session.id,
+        lastPing: Date.now(),
+        isAlive: true,
       });
 
       // Notify other collaborators
@@ -116,10 +183,10 @@ export class CollaborationService {
       });
 
     } catch (error) {
-      console.error('Join collaboration error:', error);
-      ws.send(JSON.stringify({ 
-        type: 'error', 
-        message: 'Failed to join collaboration' 
+      logger.error('Join collaboration error', { error, userId: message.userId, videoId: message.videoId });
+      ws.send(JSON.stringify({
+        type: 'error',
+        message: 'Failed to join collaboration'
       }));
     }
   }

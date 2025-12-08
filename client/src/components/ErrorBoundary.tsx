@@ -3,6 +3,32 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 
+// Error tracking service interface for extensibility
+interface ErrorTracker {
+  captureException(error: Error, context?: { extra?: Record<string, unknown> }): void;
+}
+
+// Global error tracker - can be set by the application
+let errorTracker: ErrorTracker | null = null;
+
+export function setErrorTracker(tracker: ErrorTracker): void {
+  errorTracker = tracker;
+}
+
+function reportError(error: Error, errorInfo?: ErrorInfo): void {
+  // Always log to console in development
+  if (process.env.NODE_ENV === 'development') {
+    console.error('ErrorBoundary caught an error:', error, errorInfo);
+  }
+
+  // Report to error tracking service if configured
+  if (errorTracker) {
+    errorTracker.captureException(error, {
+      extra: errorInfo ? { componentStack: errorInfo.componentStack } : undefined
+    });
+  }
+}
+
 interface Props {
   children: ReactNode;
   fallback?: ReactNode;
@@ -30,11 +56,8 @@ export class ErrorBoundary extends Component<Props, State> {
       errorInfo,
     });
 
-    // Log error to monitoring service
-    console.error('ErrorBoundary caught an error:', error, errorInfo);
-    
-    // TODO: Send to error tracking service like Sentry
-    // Sentry.captureException(error, { extra: errorInfo });
+    // Report to error tracking service
+    reportError(error, errorInfo);
   }
 
   handleRetry = () => {
@@ -95,8 +118,6 @@ export class ErrorBoundary extends Component<Props, State> {
 // Hook version for functional components
 export const useErrorHandler = () => {
   return (error: Error, errorInfo?: { componentStack?: string }) => {
-    console.error('Error caught by useErrorHandler:', error, errorInfo);
-    // TODO: Send to error tracking service
-    // Sentry.captureException(error, { extra: errorInfo });
+    reportError(error, errorInfo ? { componentStack: errorInfo.componentStack } as ErrorInfo : undefined);
   };
 };

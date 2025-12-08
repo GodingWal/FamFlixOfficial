@@ -68,9 +68,10 @@ async function safeUnlink(filePath?: string | null) {
   if (!filePath) return;
   try {
     await fs.unlink(filePath);
-  } catch (error: any) {
-    if (error?.code !== "ENOENT") {
-      console.warn("[uploads] Failed to remove file", filePath, error);
+  } catch (error: unknown) {
+    const errorWithCode = error as { code?: string };
+    if (errorWithCode?.code !== "ENOENT") {
+      logger.warn("Failed to remove file", { filePath, error });
     }
   }
 }
@@ -142,6 +143,17 @@ const storyGenerationSchema = z.object({
 
 const storyNarrationSchema = z.object({
   voiceProfileId: z.string().min(1, "voiceProfileId is required"),
+});
+
+// Voice job recording metadata schema
+const recordingMetadataSchema = z.object({
+  id: z.string().min(1),
+  duration: z.number().positive(),
+  quality: z.object({
+    score: z.number().min(0).max(100).optional(),
+    snr: z.number().optional(),
+    clipping: z.boolean().optional(),
+  }).optional(),
 });
 
 const checkoutSchema = z.object({
@@ -702,7 +714,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json(serializeUser(user));
     } catch (error) {
-      console.error('Get user error:', error);
+      logger.error('Get user error', { error, userId: req.user?.id });
       res.status(500).json({ error: "Failed to get user data" });
     }
   });
@@ -817,9 +829,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const family = await storage.createFamily(familyData);
 
       res.status(201).json(family);
-    } catch (error: any) {
-      console.error('Create family error:', error);
-      res.status(400).json({ error: error.message || "Failed to create family" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to create family";
+      logger.error('Create family error', { error: errorMessage, userId: req.user?.id });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -828,7 +841,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const families = await storage.getFamiliesByUser(req.user!.id);
       res.json(families);
     } catch (error) {
-      console.error('Get families error:', error);
+      logger.error('Get families error', { error, userId: req.user?.id });
       res.status(500).json({ error: "Failed to get families" });
     }
   });
@@ -838,7 +851,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const members = await storage.getFamilyMembers(req.params.familyId);
       res.json(members);
     } catch (error) {
-      console.error('Get family members error:', error);
+      logger.error('Get family members error', { error, familyId: req.params.familyId });
       res.status(500).json({ error: "Failed to get family members" });
     }
   });
@@ -903,13 +916,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const refreshed = await storage.getVideo(video.id);
       res.status(201).json(refreshed ?? video);
-    } catch (error: any) {
-      console.error('Admin create video error:', error);
+    } catch (error: unknown) {
+      const errorWithCode = error as { statusCode?: number; message?: string };
+      logger.error('Admin create video error', { error: errorWithCode.message, userId: req.user?.id });
       if (createdVideoId) {
         await storage.deleteVideo(createdVideoId);
       }
       await safeUnlink(uploadedFilePath);
-      res.status(error?.statusCode || 400).json({ error: error.message || "Failed to create admin video" });
+      res.status(errorWithCode?.statusCode || 400).json({ error: errorWithCode.message || "Failed to create admin video" });
     }
   });
 
@@ -919,7 +933,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const videos = await storage.getAdminProvidedVideos();
       res.json(videos);
     } catch (error) {
-      console.error('Get provided videos error:', error);
+      logger.error('Get provided videos error', { error });
       res.status(500).json({ error: "Failed to get provided videos" });
     }
   });
@@ -934,9 +948,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const video = await storage.createUserProject(videoData);
       res.status(201).json(video);
-    } catch (error: any) {
-      console.error('Create user project error:', error);
-      res.status(400).json({ error: error.message || "Failed to create project" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to create project";
+      logger.error('Create user project error', { error: errorMessage, userId: req.user?.id });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -953,7 +968,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json(videos);
     } catch (error) {
-      console.error('Get videos error:', error);
+      logger.error('Get videos error', { error, userId: req.user?.id });
       res.status(500).json({ error: "Failed to get videos" });
     }
   });
@@ -966,7 +981,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       res.json(video);
     } catch (error) {
-      console.error('Get video error:', error);
+      logger.error('Get video error', { error, videoId: req.params.videoId });
       res.status(500).json({ error: "Failed to get video" });
     }
   });
@@ -976,9 +991,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const updates = req.body;
       const video = await videoService.updateVideo(req.params.videoId, updates, req.user!.id);
       res.json(video);
-    } catch (error: any) {
-      console.error('Update video error:', error);
-      res.status(400).json({ error: error.message || "Failed to update video" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to update video";
+      logger.error('Update video error', { error: errorMessage, videoId: req.params.videoId });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -986,9 +1002,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       await videoService.deleteVideo(req.params.videoId, req.user!.id);
       res.json({ message: "Video deleted successfully" });
-    } catch (error: any) {
-      console.error('Delete video error:', error);
-      res.status(400).json({ error: error.message || "Failed to delete video" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to delete video";
+      logger.error('Delete video error', { error: errorMessage, videoId: req.params.videoId });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -998,7 +1015,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const suggestions = await videoService.generateVideoSuggestions(req.params.familyId);
       res.json(suggestions);
     } catch (error) {
-      console.error('Get video suggestions error:', error);
+      logger.error('Get video suggestions error', { error, familyId: req.params.familyId });
       res.status(500).json({ error: "Failed to generate video suggestions" });
     }
   });
@@ -1009,10 +1026,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     let voiceProfileId: string | null = null;
 
     try {
-      console.log(`Voice profile creation started by user ${req.user!.id}`);
+      logger.info('Voice profile creation started', { userId: req.user!.id });
 
       if (!req.file) {
-        console.log('Voice profile creation failed: No audio file provided');
+        logger.warn('Voice profile creation failed: No audio file provided', { userId: req.user?.id });
         return res.status(400).json({ error: "Audio file is required" });
       }
 
@@ -1020,29 +1037,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Validate input
       if (!name || name.trim().length === 0) {
-        console.log('Voice profile creation failed: Invalid name');
+        logger.warn('Voice profile creation failed: Invalid name', { userId: req.user?.id });
         return res.status(400).json({ error: "Valid name is required" });
       }
 
       if (name.length > 50) {
-        console.log('Voice profile creation failed: Name too long');
+        logger.warn('Voice profile creation failed: Name too long', { userId: req.user?.id });
         return res.status(400).json({ error: "Name must be 50 characters or less" });
       }
 
       // Validate audio file
       const allowedMimeTypes = ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/webm', 'audio/ogg'];
       if (!allowedMimeTypes.includes(req.file.mimetype)) {
-        console.log(`Voice profile creation failed: Invalid mime type ${req.file.mimetype}`);
+        logger.warn('Voice profile creation failed: Invalid mime type', { mimeType: req.file.mimetype, userId: req.user?.id });
         return res.status(400).json({ error: "Invalid audio format. Please use WAV, MP3, WebM, or OGG" });
       }
 
       if (req.file.size > 10 * 1024 * 1024) { // 10MB limit for audio
-        console.log(`Voice profile creation failed: File too large (${req.file.size} bytes)`);
+        logger.warn('Voice profile creation failed: File too large', { size: req.file.size, userId: req.user?.id });
         return res.status(400).json({ error: "Audio file too large. Maximum size is 10MB" });
       }
 
       if (req.file.size < 1024) { // Minimum 1KB
-        console.log(`Voice profile creation failed: File too small (${req.file.size} bytes)`);
+        logger.warn('Voice profile creation failed: File too small', { size: req.file.size, userId: req.user?.id });
         return res.status(400).json({ error: "Audio file too small. Please provide a valid recording" });
       }
 
@@ -1051,12 +1068,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const familyMembers = await storage.getFamilyMembers(familyId);
         const familyMember = familyMembers.find(member => member.id === req.user!.id);
         if (!familyMember) {
-          console.log(`Voice profile creation failed: User ${req.user!.id} not a member of family ${familyId}`);
+          logger.warn('Voice profile creation failed: User not a member of family', { userId: req.user!.id, familyId });
           return res.status(403).json({ error: "You don't have access to this family" });
         }
       }
 
-      console.log(`Creating voice clone: ${name.trim()} (${req.file.size} bytes, ${req.file.mimetype})`);
+      logger.info('Creating voice clone', { name: name.trim(), size: req.file.size, mimeType: req.file.mimetype });
 
       voiceProfileId = await voiceService.createVoiceClone(
         req.file.buffer,
@@ -1068,15 +1085,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const voiceProfile = await storage.getVoiceProfile(voiceProfileId);
       const duration = Date.now() - startTime;
 
-      console.log(`Voice profile created successfully: ${voiceProfileId} in ${duration}ms`);
+      logger.info('Voice profile created successfully', { profileId: voiceProfileId, duration: `${duration}ms` });
 
       res.status(201).json(voiceProfile);
-    } catch (error: any) {
+    } catch (error: unknown) {
       const duration = Date.now() - startTime;
-      console.error(`Voice profile creation failed after ${duration}ms:`, error);
-
-      // Return appropriate error message
       const errorMessage = error instanceof Error ? error.message : "Failed to create voice profile";
+      logger.error('Voice profile creation failed', { duration: `${duration}ms`, error: errorMessage });
+
       res.status(500).json({ error: errorMessage });
     }
   });
@@ -1094,7 +1110,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json(profiles);
     } catch (error) {
-      console.error('Get voice profiles error:', error);
+      logger.error('Get voice profiles error', { error, userId: req.user?.id });
       res.status(500).json({ error: "Failed to get voice profiles" });
     }
   });
@@ -1114,9 +1130,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const generation = await storage.getVoiceGeneration(generationId);
       res.status(201).json(generation);
-    } catch (error: any) {
-      console.error('Generate speech error:', error);
-      res.status(400).json({ error: error.message || "Failed to generate speech" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to generate speech";
+      logger.error('Generate speech error', { error: errorMessage, profileId: req.params.profileId });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -1134,9 +1151,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (profile.userId !== user.id) {
         // Check if user is in the same family
         if (profile.familyId) {
-          const family = await storage.getFamily(profile.familyId);
           const familyMembers = await storage.getFamilyMembers(profile.familyId);
-          const isFamilyMember = familyMembers?.some((member: any) => member.userId === user.id);
+          const isFamilyMember = familyMembers?.some((member: User) => member.id === user.id);
           if (!isFamilyMember) {
             return res.status(403).json({ error: "Access denied" });
           }
@@ -1148,7 +1164,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const generations = await storage.getVoiceGenerationsByProfile(req.params.profileId);
       res.json(generations);
     } catch (error) {
-      console.error('Get voice generations error:', error);
+      logger.error('Get voice generations error', { error, profileId: req.params.profileId });
       res.status(500).json({ error: "Failed to get voice generations" });
     }
   });
@@ -1173,11 +1189,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Auto-migrate non-ElevenLabs profiles if ElevenLabs is configured
       const { getElevenLabsProvider } = await import('./tts');
       const elevenLabs = getElevenLabsProvider();
-      
-      console.log(`[preview] Profile provider: ${profile.provider}, ElevenLabs configured: ${elevenLabs.isConfigured()}`);
-      
+
+      logger.debug('Voice preview check', { profileProvider: profile.provider, elevenLabsConfigured: elevenLabs.isConfigured() });
+
       if (profile.provider !== 'ELEVENLABS' && elevenLabs.isConfigured()) {
-        console.log(`[preview] Auto-migrating voice profile ${profileId} to ElevenLabs...`);
+        logger.info('Auto-migrating voice profile to ElevenLabs', { profileId });
         
         // Find the audio sample file
         const audioPath = profile.providerRef || (profile.metadata as any)?.voice?.audioPromptPath;
@@ -1204,9 +1220,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
             
             profile = await storage.getVoiceProfile(profileId);
-            console.log(`[preview] Successfully migrated to ElevenLabs voice: ${voiceId}`);
-          } catch (migrationError: any) {
-            console.error(`[preview] Migration failed:`, migrationError.message);
+            logger.info('Successfully migrated to ElevenLabs voice', { voiceId });
+          } catch (migrationError: unknown) {
+            const errorMessage = migrationError instanceof Error ? migrationError.message : 'Unknown error';
+            logger.error('Migration to ElevenLabs failed', { error: errorMessage });
           }
         }
       }
@@ -1220,10 +1237,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const generationId = await voiceService.generateSpeech(profileId, story, req.user!.id);
         generation = await storage.getVoiceGeneration(generationId);
-      } catch (ttsError: any) {
-        const message = String(ttsError?.message || '').trim() || 'TTS unavailable for preview';
+      } catch (ttsError: unknown) {
+        const message = ttsError instanceof Error ? ttsError.message : 'TTS unavailable for preview';
         previewWarning = message;
-        console.error('TTS generation failed for preview:', message);
+        logger.error('TTS generation failed for preview', { error: message });
       }
 
       return res.json({
@@ -1232,9 +1249,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         previewSeconds: Number(targetSeconds) || 20,
         ...(generation ? {} : { warning: previewWarning || 'TTS unavailable for preview' })
       });
-    } catch (error: any) {
-      console.error('Voice preview error:', error);
-      res.status(400).json({ error: error.message || 'Failed to generate preview' });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to generate preview';
+      logger.error('Voice preview error', { error: errorMessage });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -1290,9 +1308,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const updatedProfile = await storage.getVoiceProfile(profileId);
       res.json({ message: "Successfully migrated to ElevenLabs", profile: updatedProfile });
-    } catch (error: any) {
-      console.error('Voice migration error:', error);
-      res.status(400).json({ error: error.message || 'Failed to migrate voice profile' });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to migrate voice profile';
+      logger.error('Voice migration error', { error: errorMessage, profileId: req.params.profileId });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -1342,11 +1361,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       if (!accessGranted) {
+        logger.warn('Audio file access denied', { filename, userId: user.id });
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Verify user has access to this audio file
-      // TODO: In production, add proper access control checks
+      // Access control verified above through voice generation, voice profile, or story narration ownership
 
       try {
         // Check if file exists
@@ -1362,12 +1381,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         fileStream.pipe(res);
 
       } catch (fileError) {
-        console.error('Audio file not found:', audioFilePath);
+        logger.warn('Audio file not found', { audioFilePath });
         res.status(404).json({ error: "Audio file not found" });
       }
 
     } catch (error) {
-      console.error('Audio serving error:', error);
+      logger.error('Audio serving error', { error, filename: req.params.filename });
       res.status(500).json({ error: "Failed to serve audio file" });
     }
   });
@@ -1387,9 +1406,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       await voiceService.deleteVoiceProfile(profileId);
       res.json({ message: 'Voice profile deleted successfully' });
-    } catch (error: any) {
-      console.error('Delete voice profile error:', error);
-      res.status(400).json({ error: error.message || 'Failed to delete voice profile' });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to delete voice profile';
+      logger.error('Delete voice profile error', { error: errorMessage, profileId: req.params.profileId });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -1406,7 +1426,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "At least one recording is required" });
       }
 
-      // Parse recording metadata
+      // Parse and validate recording metadata
       const recordings = req.files.map((file, index) => {
         const metadataKey = `recordingMetadata[${index}]`;
         const metadataString = req.body[metadataKey];
@@ -1415,7 +1435,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           throw new Error(`Missing metadata for recording ${index}`);
         }
 
-        const metadata = JSON.parse(metadataString);
+        let parsedMetadata: unknown;
+        try {
+          parsedMetadata = JSON.parse(metadataString);
+        } catch {
+          throw new Error(`Invalid JSON in metadata for recording ${index}`);
+        }
+
+        // Validate metadata against schema
+        const validationResult = recordingMetadataSchema.safeParse(parsedMetadata);
+        if (!validationResult.success) {
+          const errorMessages = validationResult.error.errors.map(e => e.message).join(', ');
+          throw new Error(`Invalid metadata for recording ${index}: ${errorMessages}`);
+        }
+
+        const metadata = validationResult.data;
 
         return {
           buffer: file.buffer,
@@ -1602,7 +1636,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const stories = await storage.getStoriesForUser(req.user!.id, { category });
         res.json(stories);
       } catch (error) {
-        console.error('Get stories error:', error);
+        logger.error('Get stories error', { error, userId: req.user?.id });
         res.status(500).json({ error: "Failed to fetch stories" });
       }
     });
@@ -1674,9 +1708,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
 
         res.status(existingStory ? 200 : 201).json(result);
-      } catch (error: any) {
-        console.error('Story generation error:', error);
-        res.status(400).json({ error: error.message || "Failed to generate story" });
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : "Failed to generate story";
+        logger.error('Story generation error', { error: errorMessage });
+        res.status(400).json({ error: errorMessage });
       }
     });
 
@@ -1720,9 +1755,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
 
         res.status(201).json({ story: storyCheck.story, narrations });
-      } catch (error: any) {
-        console.error('Generate story narrations error:', error);
-        res.status(400).json({ error: error.message || "Failed to generate story narrations" });
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : "Failed to generate story narrations";
+        logger.error('Generate story narrations error', { error: errorMessage, storyId: req.params.id });
+        res.status(400).json({ error: errorMessage });
       }
     });
 
@@ -1744,7 +1780,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         res.json({ story: storyCheck.story, narrations: withSignedUrls });
       } catch (error) {
-        console.error('Get story narrations error:', error);
+        logger.error('Get story narrations error', { error, storyId: req.params.id });
         res.status(500).json({ error: "Failed to get story narrations" });
       }
     });
@@ -1760,9 +1796,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const script = await videoService.generateVideoScript(prompt, familyId);
       res.json({ script });
-    } catch (error: any) {
-      console.error('Generate video script error:', error);
-      res.status(400).json({ error: error.message || "Failed to generate video script" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to generate video script";
+      logger.error('Generate video script error', { error: errorMessage });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -1807,9 +1844,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         generation,
         message: "Story generated and converted to speech successfully"
       });
-    } catch (error: any) {
-      console.error('Auto-story generation error:', error);
-      res.status(500).json({ error: error.message || "Failed to generate auto-story" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to generate auto-story";
+      logger.error('Auto-story generation error', { error: errorMessage, voiceProfileId: req.params.voiceProfileId });
+      res.status(500).json({ error: errorMessage });
     }
   });
 
@@ -1822,9 +1860,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const enhanced = await videoService.enhanceVideoDescription(description);
       res.json({ enhanced });
-    } catch (error: any) {
-      console.error('Enhance description error:', error);
-      res.status(400).json({ error: error.message || "Failed to enhance description" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to enhance description";
+      logger.error('Enhance description error', { error: errorMessage });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -1837,9 +1876,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const script = await videoService.generateNarrationScript(videoContent, voicePersonality);
       res.json({ script });
-    } catch (error: any) {
-      console.error('Generate narration script error:', error);
-      res.status(400).json({ error: error.message || "Failed to generate narration script" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to generate narration script";
+      logger.error('Generate narration script error', { error: errorMessage });
+      res.status(400).json({ error: errorMessage });
     }
   });
 
@@ -1849,7 +1889,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const collaborators = await collaborationService.getActiveCollaborators(req.params.videoId);
       res.json(collaborators);
     } catch (error) {
-      console.error('Get collaborators error:', error);
+      logger.error('Get collaborators error', { error, videoId: req.params.videoId });
       res.status(500).json({ error: "Failed to get collaborators" });
     }
   });
@@ -1859,7 +1899,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const stats = collaborationService.getCollaborationStats(req.params.videoId);
       res.json(stats);
     } catch (error) {
-      console.error('Get collaboration stats error:', error);
+      logger.error('Get collaboration stats error', { error, videoId: req.params.videoId });
       res.status(500).json({ error: "Failed to get collaboration stats" });
     }
   });
@@ -1874,7 +1914,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
       res.json(activities);
     } catch (error) {
-      console.error('Get activities error:', error);
+      logger.error('Get activities error', { error, familyId: req.params.familyId });
       res.status(500).json({ error: "Failed to get activities" });
     }
   });
