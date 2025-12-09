@@ -1056,7 +1056,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         offset: offset ? Number(offset) : 0,
       });
 
-      res.json(results.items);
+      res.json({
+        stories: results.items,
+        total: results.total
+      });
     } catch (error: any) {
       console.error('Get stories error:', error);
       res.status(500).json({ error: "Failed to get stories" });
